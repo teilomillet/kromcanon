@@ -129,3 +129,24 @@ The loop will follow a structured prompt that:
 ### Status: 60 tests passing, ruff clean
 
 ---
+
+## 2026-03-13 — Iteration 5: Interpretability Tooling + E2E Tests
+
+### Completed
+- **Phase 4 — interp/extract.py**: Direction extraction via mean-diff and SVD. Per-layer activation collection. Multi-stream extraction for KromCanon (per-stream + joint directions). `ExtractionResult` and `MultiStreamExtractionResult` dataclasses.
+- **Phase 4 — interp/abliterate.py**: Direction removal from attention output projection weights. Multi-stream abliteration (avg per-stream directions). Greedy generation for refusal rate measurement.
+- **Phase 4 — interp/steer.py**: Activation steering during forward pass. `SteeringConfig` dataclass. `steer_forward`, `steer_generate`, `sweep_alpha` for parameter sweeps.
+- **Phase 4 — interp/compare.py**: Cross-architecture comparison (pairwise cosine similarity, Pearson correlation of layer norms). Stream distribution analysis (entropy-based concentration, dominant stream identification). `format_comparison_report` for human-readable output.
+- **Phase 4 — scripts/extract.py**: CLI for direction extraction from checkpoints.
+- **Phase 4 — scripts/compare.py**: CLI for cross-architecture comparison and report generation.
+- **Phase 5 — test_e2e.py**: End-to-end smoke tests for all three architectures: create model → train 3 steps → extract directions → abliterate → steer. Cross-architecture comparison test.
+
+### Key Verification
+- Full pipeline (train → extract → abliterate → steer) runs for all 3 architectures
+- Abliteration verifiably removes directions (projection onto direction ≈ 0 after removal)
+- Steering with alpha=0 matches normal forward pass (verified <1e-4 diff)
+- Cross-architecture comparison produces valid cosine similarities in [-1, 1]
+
+### Status: 77 tests passing, ruff clean
+
+---

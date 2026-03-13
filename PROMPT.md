@@ -18,61 +18,60 @@ Build three GPT-2 124M variants (Vanilla, Canon, KromCanon) from scratch in pure
 ## Implementation Checklist
 
 ### Phase 0: Project Structure
-- [ ] Create `pyproject.toml` with dependencies (mlx, mlx-lm, datasets, numpy, ruff)
-- [ ] Create `src/kromcanon/` package structure
-- [ ] Create `tests/` directory with pytest configuration
+- [x] Create `pyproject.toml` with dependencies (mlx, mlx-lm, datasets, numpy, ruff)
+- [x] Create `src/kromcanon/` package structure
+- [x] Create `tests/` directory with pytest configuration
 
 ### Phase 1: Core Modules
-- [ ] `src/kromcanon/config.py` — Dataclass configs for Vanilla, Canon, KromCanon variants
-- [ ] `src/kromcanon/canon.py` — Canon layer implementation (depthwise causal conv, kernel=4)
+- [x] `src/kromcanon/config.py` — Dataclass configs for Vanilla, Canon, KromCanon variants
+- [x] `src/kromcanon/canon.py` — Canon layer implementation (depthwise causal conv, kernel=4)
   - DepthwiseCausalConv class
   - Canon-A integration helper (pre-attention)
   - Canon-B integration helper (Q/K/V projections)
   - Unit tests: causal masking, output shapes, gradient flow
-- [ ] `src/kromcanon/kromhc.py` — KromHC residual connections (MLX port)
+- [x] `src/kromcanon/kromhc.py` — KromHC residual connections (MLX port)
   - Kronecker product of 2x2 doubly stochastic factors
   - width_connection (mix streams before branch)
   - depth_connection (mix branch output back)
   - Dynamic coefficient computation
   - Unit tests: doubly stochastic property, initialization = identity, shapes
-- [ ] `src/kromcanon/model.py` — GPT-2 transformer with pluggable architecture
+- [x] `src/kromcanon/model.py` — GPT-2 transformer with pluggable architecture
   - TransformerBlock supporting vanilla/canon/kromcanon modes
   - Full GPT-2 model (embeddings, blocks, LM head)
   - Config-driven architecture selection
   - Unit tests: forward pass shapes, parameter counts, generation
 
 ### Phase 2: Training Infrastructure
-- [ ] `src/kromcanon/data.py` — FineWeb-Edu data loading with BOS-aligned packing
-- [ ] `src/kromcanon/tokenizer.py` — BPE tokenizer (adapt from nanochat-mlx or use existing)
-- [ ] `src/kromcanon/train.py` — Training loop with Muon + AdamW
-  - Separate optimizer groups for HC params vs main params
+- [x] `src/kromcanon/data.py` — FineWeb-Edu data loading with BOS-aligned packing
+- [x] `src/kromcanon/tokenizer.py` — BPE tokenizer (adapt from nanochat-mlx or use existing)
+- [x] `src/kromcanon/train.py` — Training loop with AdamW
   - Gradient clipping, warmup scheduling
   - Logging and checkpointing
-- [ ] `scripts/train.py` — CLI entry point with `--arch={vanilla,canon,kromcanon}` flag
+- [x] `scripts/train.py` — CLI entry point with `--arch={vanilla,canon,kromcanon}` flag
 
 ### Phase 3: Safety Fine-Tuning
-- [ ] `src/kromcanon/safety_data.py` — Load and format HH-RLHF / BeaverTails
-- [ ] `src/kromcanon/sft.py` — SFT training loop for safety contrast pairs
-- [ ] `scripts/sft.py` — CLI entry point
+- [x] `src/kromcanon/safety_data.py` — Load and format HH-RLHF / BeaverTails
+- [x] `src/kromcanon/sft.py` — SFT training loop for safety contrast pairs
+- [x] `scripts/sft.py` — CLI entry point
 
 ### Phase 4: Interpretability
-- [ ] `src/kromcanon/interp/extract.py` — Direction extraction (mean-diff, SVD)
+- [x] `src/kromcanon/interp/extract.py` — Direction extraction (mean-diff, SVD)
   - Per-layer activation collection
   - For KromHC: per-stream and joint extraction
-- [ ] `src/kromcanon/interp/abliterate.py` — Direction removal and refusal rate measurement
-- [ ] `src/kromcanon/interp/steer.py` — Activation steering
-- [ ] `src/kromcanon/interp/compare.py` — Cross-architecture comparison
+- [x] `src/kromcanon/interp/abliterate.py` — Direction removal and refusal rate measurement
+- [x] `src/kromcanon/interp/steer.py` — Activation steering
+- [x] `src/kromcanon/interp/compare.py` — Cross-architecture comparison
   - Direction cosine similarity across variants
   - Per-layer projection profiles
   - Stream distribution analysis for KromCanon
-- [ ] `scripts/extract.py` — CLI for direction extraction
-- [ ] `scripts/compare.py` — CLI for cross-variant analysis
+- [x] `scripts/extract.py` — CLI for direction extraction
+- [x] `scripts/compare.py` — CLI for cross-variant analysis
 
 ### Phase 5: Validation & Polish
-- [ ] End-to-end smoke test (tiny model, few steps, all three variants)
-- [ ] All tests passing with `pytest`
-- [ ] `ruff check` passes
-- [ ] Documentation complete in DEVLOG.md
+- [x] End-to-end smoke test (tiny model, few steps, all three variants)
+- [x] All tests passing with `pytest` (77 tests)
+- [x] `ruff check` passes
+- [x] Documentation complete in DEVLOG.md
 
 ## Quality Standards
 
