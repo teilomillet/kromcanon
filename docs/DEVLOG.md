@@ -88,3 +88,28 @@ The loop will follow a structured prompt that:
 ### Status: 44 tests passing, ruff clean
 
 ---
+
+## 2026-03-13 — Iteration 3: Training Infrastructure
+
+### Completed
+- **Phase 2 — tokenizer.py**: BPE tokenizer wrapper using HuggingFace `tokenizers` library. Supports custom tokenizer files or fallback basic BPE.
+- **Phase 2 — data.py**: FineWeb-Edu streaming loader, BOS-aligned sequence packing, `PretrainDataLoader` yielding (input, target) batches for next-token prediction.
+- **Phase 2 — train.py**: Full training loop with:
+  - `compute_loss`: cross-entropy next-token prediction
+  - `create_lr_schedule`: cosine decay with optional linear warmup
+  - `create_optimizer`: AdamW with schedule
+  - `train_step`: single step with gradient clipping via `optim.clip_grad_norm`
+  - `save_checkpoint` / `load_checkpoint`: model weights + metadata
+  - `train`: full loop with logging, periodic eval, checkpointing
+  - `evaluate`: capped at 50 batches
+- **Phase 2 — scripts/train.py**: CLI with `--arch`, `--depth`, `--smoke` flags
+- **Tests**: 8 training tests (loss computation, loss decrease over steps, all 3 archs train, data packing, loader shapes, evaluation)
+
+### Bug Fixes
+- `warmup_steps=0` caused `linear_schedule` to crash — now skips warmup when steps=0
+- `mx.utils.tree_flatten` doesn't exist — use `mlx.utils.tree_flatten`
+- Forward references to `PretrainDataLoader` — used `from __future__ import annotations` + `TYPE_CHECKING`
+
+### Status: 52 tests passing, ruff clean
+
+---
