@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
+import mlx.utils
 import numpy as np
 
 from kromcanon.config import ModelConfig, TrainConfig
@@ -120,7 +121,7 @@ def save_checkpoint(
     """
     path.mkdir(parents=True, exist_ok=True)
     # Save model weights
-    weights = dict(mx.utils.tree_flatten(model.trainable_parameters()))
+    weights = dict(mlx.utils.tree_flatten(model.trainable_parameters()))
     mx.savez(str(path / "model.npz"), **weights)
     # Save metadata
     meta = {

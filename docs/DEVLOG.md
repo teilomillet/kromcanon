@@ -113,3 +113,19 @@ The loop will follow a structured prompt that:
 ### Status: 52 tests passing, ruff clean
 
 ---
+
+## 2026-03-13 — Iteration 4: Safety Fine-Tuning
+
+### Completed
+- **Phase 3 — safety_data.py**: HH-RLHF and BeaverTails dataset loading, conversation parsing, SFT formatting, tokenization, padded batch iteration.
+- **Phase 3 — sft.py**: SFT training loop with lower LR (1/10th pretraining), gradient clipping, checkpointing.
+- **Phase 3 — scripts/sft.py**: CLI with `--arch`, `--checkpoint`, `--max-steps`, `--max-examples` flags.
+- **Tests**: 8 safety tests (HH conversation parsing, SFT formatting, tokenization, truncation, batch shapes, SFT loop execution).
+
+### Bug Fixes
+- `mx.utils` doesn't exist — fixed all references to `mlx.utils` with explicit import.
+- Fixed unused imports and unsorted import blocks caught by ruff.
+
+### Status: 60 tests passing, ruff clean
+
+---
