@@ -58,7 +58,10 @@ class ModelConfig:
             self.canon = CanonConfig(enabled=True)
             self.kromhc = KromHCConfig(enabled=True)
         elif self.arch != "vanilla":
-            msg = f"Unknown architecture: {self.arch!r}. Must be 'vanilla', 'canon', or 'kromcanon'."
+            msg = (
+                f"Unknown architecture: {self.arch!r}. "
+                "Must be 'vanilla', 'canon', or 'kromcanon'."
+            )
             raise ValueError(msg)
 
 

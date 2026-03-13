@@ -57,3 +57,34 @@ The loop will follow a structured prompt that:
 - All 10 tests passing
 
 ---
+
+## 2026-03-13 — Iteration 2: KromHC + GPT-2 Model
+
+### Completed
+- **Phase 1 — kromhc.py**: Full KromHC implementation:
+  - `KromHCLayer`: width_connection (stream → branch input + residual mixing), depth_connection (branch output → streams), full forward with branch_fn callback
+  - `_build_kronecker_hres`: Kronecker product of 2x2 doubly stochastic factors
+  - `_build_2x2_factor`: Optimized 2x2 path (p*I + (1-p)*swap)
+  - `_kronecker_product`: Batched Kronecker product via expand+reshape
+  - `KromHCInit` / `KromHCReduce`: stream expansion and mean reduction
+  - Dynamic mode with RMSNorm + projected coefficients (W init to zero → starts static)
+  - Proper initialization: b^res=[0, -8] → H^res≈I, b^pre/b^post select by layer_index%n
+- **Phase 1 — model.py**: Full GPT-2 with pluggable architecture:
+  - `CausalSelfAttention` with optional Canon-B
+  - `FeedForward` with GELU
+  - `TransformerBlock` supporting all three modes (vanilla/canon/kromcanon)
+  - `GPT2` with token+position embeddings, KromHC init/reduce, LM head
+  - Config-driven architecture selection
+- **Tests**: 20 KromHC tests (doubly stochastic property, Kronecker closure, init≈identity, shapes, stream init/reduce) + 14 model tests (forward pass shapes for all 3 archs, param count ordering, edge cases)
+
+### Key Verification
+- Doubly stochastic property verified: row sums = col sums = 1, non-negative
+- Kronecker closure theorem (Theorem 4.2) verified in tests
+- H^res ≈ Identity at initialization confirmed (max diff < 0.01)
+- Canon adds ~0.5-5% params over vanilla (verified)
+- KromCanon adds params over Canon (verified)
+- `ruff check` passes clean
+
+### Status: 44 tests passing, ruff clean
+
+---
