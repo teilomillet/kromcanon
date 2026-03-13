@@ -1,0 +1,35 @@
+[project]
+name = "kromcanon"
+version = "0.1.0"
+description = "Steering vectors in non-standard transformer architectures"
+requires-python = ">=3.12"
+dependencies = [
+    "mlx>=0.22.0",
+    "numpy>=1.26.0",
+    "datasets>=2.18.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

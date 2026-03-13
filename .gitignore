@@ -10,3 +10,6 @@ checkpoints/
 *.safetensors
 *.bin
 *.pt
+.pytest_cache/
+.ruff_cache/
+.claude/
