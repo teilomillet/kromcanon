@@ -7,7 +7,6 @@ Verifies the full pipeline works: model creation → training → direction extr
 import mlx.core as mx
 
 from kromcanon.config import ModelConfig, TrainConfig
-from kromcanon.data import PretrainDataLoader
 from kromcanon.interp.abliterate import abliterate_model
 from kromcanon.interp.compare import compare_directions
 from kromcanon.interp.extract import (
