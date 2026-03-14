@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import mlx.core as mx
-import mlx.nn as nn
 
 from kromcanon.model import GPT2
 
@@ -185,8 +184,8 @@ def extract_svd(
         harmless_mean = harmless_stack.mean(axis=0)
         diff_matrix = harmful_stack - harmless_mean  # (n_harmful, d_model)
 
-        # SVD
-        u, s, vt = mx.linalg.svd(diff_matrix, stream=mx.cpu)
+        # SVD (requires float32 — model may produce bfloat16)
+        u, s, vt = mx.linalg.svd(diff_matrix.astype(mx.float32), stream=mx.cpu)
 
         # Top-1 direction (first right singular vector)
         top_dir = vt[0]
@@ -280,8 +279,6 @@ def _forward_with_activations(
     b, t = input_ids.shape
     positions = mx.arange(t)
     x = model.wte(input_ids) + model.wpe(positions)
-    mask = nn.MultiHeadAttention.create_additive_causal_mask(t).astype(x.dtype)
-
     results: dict[int, mx.array] = {}
 
     # Handle KromCanon
@@ -290,7 +287,7 @@ def _forward_with_activations(
         residuals = model.kromhc_init(x)
 
     for i, block in enumerate(model.blocks):
-        x, residuals = block(x, mask=mask, residuals=residuals)
+        x, residuals = block(x, residuals=residuals)
         if i in layers:
             if residuals is not None:
                 # KromCanon: mean over streams
@@ -319,7 +316,6 @@ def _forward_with_multistream_activations(
     b, t = input_ids.shape
     positions = mx.arange(t)
     x = model.wte(input_ids) + model.wpe(positions)
-    mask = nn.MultiHeadAttention.create_additive_causal_mask(t).astype(x.dtype)
 
     results: dict[int, mx.array] = {}
 
@@ -328,7 +324,7 @@ def _forward_with_multistream_activations(
         residuals = model.kromhc_init(x)
 
     for i, block in enumerate(model.blocks):
-        x, residuals = block(x, mask=mask, residuals=residuals)
+        x, residuals = block(x, residuals=residuals)
         if i in layers:
             if residuals is not None:
                 results[i] = residuals

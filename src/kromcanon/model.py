@@ -68,16 +68,11 @@ class CausalSelfAttention(nn.Module):
         v = v.reshape(b, t, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
         # Now: (batch, n_heads, seq_len, head_dim)
 
-        # Scaled dot-product attention
-        attn_weights = (q @ k.transpose(0, 1, 3, 2)) * self.scale  # (b, nh, t, t)
-
-        if mask is not None:
-            attn_weights = attn_weights + mask
-
-        attn_weights = mx.softmax(attn_weights, axis=-1)
-
-        # Apply attention to values
-        out = attn_weights @ v  # (batch, n_heads, seq_len, head_dim)
+        # Fused Flash-style attention (Metal kernel)
+        sdpa_mask = mask if mask is not None else "causal"
+        out = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=self.scale, mask=sdpa_mask,
+        )
         out = out.transpose(0, 2, 1, 3).reshape(b, t, d)  # (batch, seq_len, d_model)
 
         return self.o_proj(out)
@@ -248,8 +243,8 @@ class GPT2(nn.Module):
         # Final layer norm
         self.ln_f = nn.RMSNorm(config.d_model, eps=config.norm_eps)
 
-        # LM head (tied with wte)
-        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        # LM head: weight-tied with wte (standard GPT-2)
+        # No separate nn.Linear — forward uses x @ wte.weight.T directly.
 
         # KromHC init/reduce
         self.kromhc_init: KromHCInit | None = None
@@ -273,25 +268,22 @@ class GPT2(nn.Module):
         positions = mx.arange(t)
         x = self.wte(input_ids) + self.wpe(positions)
 
-        # Causal mask: -inf for future positions
-        mask = nn.MultiHeadAttention.create_additive_causal_mask(t).astype(x.dtype)
-
         # KromCanon: initialize multi-stream residuals
         residuals: mx.array | None = None
         if self.kromhc_init is not None:
             residuals = self.kromhc_init(x)
 
-        # Transformer blocks
+        # Transformer blocks (causal masking handled by SDPA)
         for block in self.blocks:
-            x, residuals = block(x, mask=mask, residuals=residuals)
+            x, residuals = block(x, residuals=residuals)
 
         # KromCanon: reduce multi-stream to single stream
         if self.kromhc_reduce is not None and residuals is not None:
             x = self.kromhc_reduce(residuals)
 
-        # Final norm + LM head
+        # Final norm + LM head (weight-tied with wte)
         x = self.ln_f(x)
-        return self.lm_head(x)
+        return x @ self.wte.weight.T
 
     def count_parameters(self) -> int:
         """Count total trainable parameters.
@@ -309,12 +301,18 @@ class GPT2(nn.Module):
 
 
 def make_model(config: ModelConfig) -> GPT2:
-    """Create a GPT-2 model from config.
+    """Create a GPT-2 model from config, cast to bfloat16.
+
+    Uses bfloat16 for all parameters — halves memory bandwidth
+    on Apple Silicon for ~1.5-2x throughput. Loss computation
+    is done in float32 for numerical stability (see compute_loss).
 
     Args:
         config: Model configuration.
 
     Returns:
-        Initialized GPT-2 model.
+        Initialized GPT-2 model in bfloat16.
     """
-    return GPT2(config)
+    model = GPT2(config)
+    model.set_dtype(mx.bfloat16)
+    return model

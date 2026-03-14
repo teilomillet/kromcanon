@@ -104,7 +104,12 @@ class KromHCLayer(nn.Module):
         """Initialize Kronecker factor biases for H^res ≈ Identity at init.
 
         For 2x2 factors: b^res = [0, -8] → softmax ≈ [1, 0] → U ≈ Identity.
+        If freeze_hres is True, b_res is not created (H^res = I always).
         """
+        if self.config.freeze_hres:
+            # No learnable parameters — H^res is constant identity
+            self.b_res = []
+            return
         self.b_res: list[mx.array] = []
         for factor_size in self.kronecker_factors:
             n_perms = _factorial(factor_size)
@@ -158,6 +163,9 @@ class KromHCLayer(nn.Module):
         Returns:
             H^res matrix, shape (batch, seq_len, n_streams, n_streams) or (n_streams, n_streams).
         """
+        if self.config.freeze_hres:
+            return mx.eye(self.n_streams)
+
         hres: mx.array | None = None
 
         for k, factor_size in enumerate(self.kronecker_factors):
@@ -453,3 +461,69 @@ def _kronecker_product(a: mx.array, b: mx.array) -> mx.array:
 
     # Reshape (..., m, n, m, n) → (..., m*n, m*n)
     return result.reshape(*batch_shape, m * n, m * n)
+
+
+def extract_hres_metrics(model: object) -> dict[str, float]:
+    """Extract H^res Frobenius distance from identity and alpha_res for all KromHC layers.
+
+    Lightweight function designed to be called at each training log step.
+    Only reads parameter values — no forward pass, no gradients.
+
+    Args:
+        model: GPT2 model (must have .blocks with KromHC layers).
+
+    Returns:
+        Dict with keys like 'hres/L0_attn_frob', 'hres/L0_attn_alpha_res',
+        plus 'hres/mean_frob' aggregate. Empty dict if model has no KromHC.
+    """
+    metrics: dict[str, float] = {}
+    n_layers = 0
+    total_frob = 0.0
+
+    blocks = getattr(model, "blocks", [])
+    for i, block in enumerate(blocks):
+        for branch_attr, branch_label in [
+            ("kromhc_attn", "attn"),
+            ("kromhc_ffn", "ffn"),
+        ]:
+            hc_layer: KromHCLayer | None = getattr(block, branch_attr, None)
+            if hc_layer is None:
+                continue
+            if not hasattr(hc_layer, "b_res"):
+                continue
+
+            # Skip frozen H^res
+            if hc_layer.config.freeze_hres or len(hc_layer.b_res) == 0:
+                continue
+
+            # Build static H^res (no dynamic component)
+            hres: mx.array | None = None
+            for k, factor_size in enumerate(hc_layer.kronecker_factors):
+                weights = mx.softmax(hc_layer.b_res[k], axis=-1)
+                factor = _build_doubly_stochastic_factor(weights, factor_size)
+                hres = factor if hres is None else _kronecker_product(hres, factor)
+
+            assert hres is not None
+            n = hres.shape[-1]
+            diff = hres - mx.eye(n)
+            frob = float(mx.sqrt((diff * diff).sum()).item())
+
+            prefix = f"hres/L{i}_{branch_label}"
+            metrics[f"{prefix}_frob"] = frob
+
+            # Factor identity weights
+            for k, b in enumerate(hc_layer.b_res):
+                p_identity = float(mx.softmax(b, axis=-1)[0].item())
+                metrics[f"{prefix}_factor{k}_p"] = p_identity
+
+            # Alpha_res
+            alpha = float(mx.array(hc_layer.alpha_res).item())
+            metrics[f"{prefix}_alpha_res"] = alpha
+
+            total_frob += frob
+            n_layers += 1
+
+    if n_layers > 0:
+        metrics["hres/mean_frob"] = total_frob / n_layers
+
+    return metrics

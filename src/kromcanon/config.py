@@ -24,6 +24,7 @@ class KromHCConfig:
     dynamic: bool = True  # Input-dependent coefficients
     alpha_init: float = 0.01  # Initial scale for dynamic params
     bias_res_init: float = -8.0  # Init for res bias → softmax ≈ [1, 0] → identity
+    freeze_hres: bool = False  # If True, H^res is hard-coded to identity (ablation)
 
 
 @dataclass
@@ -32,7 +33,7 @@ class ModelConfig:
 
     # Architecture
     arch: str = "vanilla"  # "vanilla", "canon", "kromcanon"
-    vocab_size: int = 32768
+    vocab_size: int = 50304  # GPT-2: 50257 tokens, padded to nearest 64 for kernel alignment
     n_layers: int = 12
     n_heads: int = 12
     d_model: int = 768
@@ -82,6 +83,10 @@ class TrainConfig:
     max_steps: int = 5000
     grad_clip: float = 1.0
 
+    # Muon optimizer (for 2D weight matrices — attention/FFN projections)
+    use_muon: bool = True
+    muon_lr: float = 0.02
+
     # KromHC-specific optimizer params (AdamW for HC params)
     hc_lr: float = 5e-3
     hc_betas: tuple[float, float] = (0.8, 0.95)
@@ -94,14 +99,39 @@ class TrainConfig:
     checkpoint_dir: str = "checkpoints"
 
 
-def make_config(arch: str = "vanilla", depth: int = 12) -> ModelConfig:
-    """Create a model config for the given architecture and depth.
+# Size presets: (n_heads, d_model, d_ff, max_seq_len)
+# Aligned with Physics of LLMs Part 4.1 (Allen-Zhu, NeurIPS 2025)
+SIZE_PRESETS: dict[str, tuple[int, int, int, int]] = {
+    "micro": (4, 256, 1024, 256),    # Pipeline validation — trains in seconds
+    "small": (8, 512, 2048, 512),    # 8L512D from Physics of LLMs 4.1
+    "medium": (12, 768, 3072, 2048), # 12L768D — GPT-2 small scale
+}
+
+
+def make_config(
+    arch: str = "vanilla",
+    depth: int = 12,
+    size: str = "medium",
+) -> ModelConfig:
+    """Create a model config for the given architecture, depth, and size preset.
 
     Args:
         arch: Architecture variant — "vanilla", "canon", or "kromcanon".
         depth: Number of transformer layers.
+        size: Size preset — "micro", "small", or "medium".
 
     Returns:
         Configured ModelConfig instance.
     """
-    return ModelConfig(arch=arch, n_layers=depth)
+    if size not in SIZE_PRESETS:
+        msg = f"Unknown size preset: {size!r}. Must be one of {list(SIZE_PRESETS.keys())}."
+        raise ValueError(msg)
+    n_heads, d_model, d_ff, max_seq_len = SIZE_PRESETS[size]
+    return ModelConfig(
+        arch=arch,
+        n_layers=depth,
+        n_heads=n_heads,
+        d_model=d_model,
+        d_ff=d_ff,
+        max_seq_len=max_seq_len,
+    )

@@ -87,7 +87,9 @@ def load_beavertails(
     """
     from datasets import load_dataset
 
-    ds = load_dataset("PKU-Alignment/BeaverTails", split=split)
+    # BeaverTails uses '330k_train'/'30k_train' instead of 'train'
+    bt_split = f"330k_{split}" if split in ("train", "test") else split
+    ds = load_dataset("PKU-Alignment/BeaverTails", split=bt_split)
     pairs: list[ConversationPair] = []
 
     for i, example in enumerate(ds):
@@ -194,6 +196,37 @@ def iter_safety_batches(
         input_ids = mx.array(batch[:, :-1])
         target_ids = mx.array(batch[:, 1:])
         yield input_ids, target_ids
+
+
+def load_test_prompts(
+    max_examples: int = 100,
+) -> tuple[list[str], list[str]]:
+    """Load harmful and harmless test prompts from HH-RLHF test split.
+
+    Uses the test split to avoid train/test data leakage during direction
+    extraction. Returns raw prompt strings (not tokenized).
+
+    Args:
+        max_examples: Maximum number of prompts per category.
+
+    Returns:
+        Tuple of (harmful_prompts, harmless_prompts) as string lists.
+    """
+    from datasets import load_dataset
+
+    harmful: list[str] = []
+    harmless: list[str] = []
+
+    for subset, target in [("harmless-base", harmful), ("helpful-base", harmless)]:
+        ds = load_dataset("Anthropic/hh-rlhf", data_dir=subset, split="test")
+        for example in ds:
+            if len(target) >= max_examples:
+                break
+            parsed = _parse_hh_conversation(example["chosen"])
+            if parsed is not None:
+                target.append(parsed[0])
+
+    return harmful, harmless
 
 
 def _parse_hh_conversation(text: str) -> tuple[str, str] | None:

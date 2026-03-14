@@ -1,8 +1,10 @@
 """Training loop for KromCanon models.
 
 Supports all three architecture variants with appropriate optimizer grouping:
-- Vanilla/Canon: single optimizer (AdamW) for all parameters
-- KromCanon: separate optimizer groups for main params and HC params
+- Vanilla/Canon: Muon (2D weights) + AdamW (embeddings, 1D params)
+- KromCanon: Muon (2D weights) + AdamW-HC (KromHC params) + AdamW (rest)
+
+Uses mx.compile for fused GPU kernels in the training step.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import mlx.utils
 import numpy as np
 
 from kromcanon.config import ModelConfig, TrainConfig
+from kromcanon.kromhc import extract_hres_metrics
 from kromcanon.model import GPT2
 
 if TYPE_CHECKING:
@@ -39,13 +42,44 @@ def compute_loss(
     """
     logits = model(input_ids)  # (batch, seq_len, vocab_size)
     # Reshape for cross-entropy: (batch * seq_len, vocab_size)
+    # Cast to float32 for numerical stability (model may be bfloat16)
     b, t, v = logits.shape
     loss = nn.losses.cross_entropy(
-        logits.reshape(b * t, v),
+        logits.reshape(b * t, v).astype(mx.float32),
         target_ids.reshape(b * t),
         reduction="mean",
     )
     return loss
+
+
+def _create_schedule(
+    config: TrainConfig, lr: float, min_lr: float | None = None,
+) -> optim.schedulers.cosine_decay:
+    """Create cosine decay learning rate schedule with optional warmup.
+
+    Args:
+        config: Training configuration (uses warmup_steps and max_steps).
+        lr: Peak learning rate.
+        min_lr: End learning rate. Defaults to lr / 10.
+
+    Returns:
+        MLX learning rate schedule.
+    """
+    if min_lr is None:
+        min_lr = lr / 10
+    decay_steps = max(config.max_steps - config.warmup_steps, 1)
+    cosine = optim.schedulers.cosine_decay(
+        init=lr, decay_steps=decay_steps, end=min_lr,
+    )
+    if config.warmup_steps > 0:
+        warmup = optim.schedulers.linear_schedule(
+            init=1e-7, end=lr, steps=config.warmup_steps,
+        )
+        return optim.schedulers.join_schedules(
+            schedules=[warmup, cosine],
+            boundaries=[config.warmup_steps],
+        )
+    return cosine
 
 
 def create_lr_schedule(
@@ -59,31 +93,48 @@ def create_lr_schedule(
     Returns:
         MLX learning rate schedule.
     """
-    decay_steps = max(config.max_steps - config.warmup_steps, 1)
-    cosine = optim.schedulers.cosine_decay(
-        init=config.lr,
-        decay_steps=decay_steps,
-        end=config.min_lr,
-    )
-    if config.warmup_steps > 0:
-        warmup = optim.schedulers.linear_schedule(
-            init=1e-7,
-            end=config.lr,
-            steps=config.warmup_steps,
-        )
-        return optim.schedulers.join_schedules(
-            schedules=[warmup, cosine],
-            boundaries=[config.warmup_steps],
-        )
-    return cosine
+    return _create_schedule(config, config.lr, config.min_lr)
+
+
+def _is_muon_param(path: str, param: mx.array) -> bool:
+    """Return True for 2D weight matrices suited for Muon.
+
+    Excludes embeddings and LM head — those train better with AdamW.
+
+    Args:
+        path: Parameter path in the model tree.
+        param: Parameter array.
+
+    Returns:
+        True if this parameter should use Muon.
+    """
+    if param.ndim != 2:
+        return False
+    return not any(name in path for name in ("wte", "wpe"))
+
+
+def _is_hc_param(path: str, _param: mx.array) -> bool:
+    """Return True for KromHC parameters.
+
+    Args:
+        path: Parameter path in the model tree.
+        _param: Parameter array (unused).
+
+    Returns:
+        True if this is a KromHC parameter.
+    """
+    return "kromhc" in path
 
 
 def create_optimizer(
-    model: GPT2, model_config: ModelConfig, train_config: TrainConfig
+    model: GPT2, model_config: ModelConfig, train_config: TrainConfig,
 ) -> optim.Optimizer:
     """Create optimizer with appropriate parameter grouping.
 
-    For KromCanon, HC parameters get separate learning rate and betas.
+    When use_muon is True:
+    - Muon for 2D weight matrices (Q/K/V/O projections, FFN layers)
+    - AdamW for embeddings, 1D params, and LM head
+    - For KromCanon: separate AdamW group for HC params with custom LR/betas
 
     Args:
         model: The GPT-2 model.
@@ -93,12 +144,47 @@ def create_optimizer(
     Returns:
         Configured optimizer.
     """
-    schedule = create_lr_schedule(train_config)
-    optimizer = optim.AdamW(
-        learning_rate=schedule,
+    adamw_schedule = create_lr_schedule(train_config)
+
+    if not train_config.use_muon:
+        return optim.AdamW(
+            learning_rate=adamw_schedule,
+            weight_decay=train_config.weight_decay,
+        )
+
+    muon_schedule = _create_schedule(config=train_config, lr=train_config.muon_lr)
+    muon = optim.Muon(
+        learning_rate=muon_schedule,
+        momentum=0.95,
+        weight_decay=0.01,
+        nesterov=True,
+    )
+    adamw = optim.AdamW(
+        learning_rate=adamw_schedule,
         weight_decay=train_config.weight_decay,
     )
-    return optimizer
+
+    if model_config.kromhc.enabled:
+        # Three groups: Muon → 2D weights, HC-AdamW → KromHC params, AdamW → rest
+        hc_schedule = _create_schedule(config=train_config, lr=train_config.hc_lr)
+        hc_adamw = optim.AdamW(
+            learning_rate=hc_schedule,
+            betas=train_config.hc_betas,
+            weight_decay=train_config.hc_weight_decay,
+        )
+        return optim.MultiOptimizer(
+            optimizers=[muon, hc_adamw, adamw],
+            filters=[
+                lambda path, param: _is_muon_param(path, param) and not _is_hc_param(path, param),
+                _is_hc_param,
+            ],
+        )
+
+    # Two groups: Muon → 2D weights, AdamW → rest
+    return optim.MultiOptimizer(
+        optimizers=[muon, adamw],
+        filters=[_is_muon_param],
+    )
 
 
 def save_checkpoint(
@@ -157,7 +243,9 @@ def train_step(
     optimizer: optim.Optimizer,
     grad_clip: float = 1.0,
 ) -> mx.array:
-    """Execute a single training step.
+    """Execute a single training step (uncompiled, for tests and simple use).
+
+    For production training, use ``train()`` which compiles the step.
 
     Args:
         model: The GPT-2 model.
@@ -169,7 +257,7 @@ def train_step(
     Returns:
         Loss value for this step.
     """
-    loss_and_grad_fn = nn.value_and_grad(model, lambda m, x, y: compute_loss(m, x, y))
+    loss_and_grad_fn = nn.value_and_grad(model, compute_loss)
     loss, grads = loss_and_grad_fn(model, input_ids, target_ids)
 
     # Gradient clipping
@@ -188,7 +276,7 @@ def train(
     train_config: TrainConfig,
     eval_loader: PretrainDataLoader | None = None,
 ) -> list[dict[str, float]]:
-    """Full training loop.
+    """Full training loop with compiled step and Muon optimizer.
 
     Args:
         model: The GPT-2 model.
@@ -203,13 +291,27 @@ def train(
     optimizer = create_optimizer(model, model_config, train_config)
     checkpoint_dir = Path(train_config.checkpoint_dir) / model_config.arch
 
+    # Compiled training step — fuses GPU kernels for ~15-30% speedup
+    loss_and_grad_fn = nn.value_and_grad(model, compute_loss)
+    state = [model.state, optimizer.state]
+
+    def _step(input_ids: mx.array, target_ids: mx.array) -> mx.array:
+        loss, grads = loss_and_grad_fn(model, input_ids, target_ids)
+        grads, _ = optim.clip_grad_norm(grads, max_norm=train_config.grad_clip)
+        optimizer.update(model, grads)
+        return loss
+
+    compiled_step = mx.compile(_step, inputs=state, outputs=state)
+
     logs: list[dict[str, float]] = []
     step = 0
     epoch = 0
 
+    optimizer_name = type(optimizer).__name__
     print(f"Training {model_config.arch} model for {train_config.max_steps} steps")
+    print(f"  Optimizer: {optimizer_name}")
     print(f"  Batch size: {train_config.batch_size}")
-    print(f"  Learning rate: {train_config.lr}")
+    print(f"  Learning rate: {train_config.lr} (Muon: {train_config.muon_lr})")
     print(f"  Grad clip: {train_config.grad_clip}")
 
     while step < train_config.max_steps:
@@ -219,21 +321,24 @@ def train(
                 break
 
             t0 = time.perf_counter()
-            loss = train_step(
-                model, input_ids, target_ids, optimizer, train_config.grad_clip
-            )
+            loss = compiled_step(input_ids, target_ids)
+            mx.eval(state)
             dt = time.perf_counter() - t0
 
             step += 1
             loss_val = loss.item()
 
             if step % train_config.log_interval == 0:
-                log_entry = {
+                log_entry: dict[str, float] = {
                     "step": step,
                     "loss": loss_val,
                     "time_ms": dt * 1000,
                     "epoch": epoch,
                 }
+                # Log H^res metrics for KromCanon models
+                if model_config.kromhc.enabled:
+                    hres_metrics = extract_hres_metrics(model)
+                    log_entry.update(hres_metrics)
                 logs.append(log_entry)
                 tokens_per_sec = (
                     train_config.batch_size

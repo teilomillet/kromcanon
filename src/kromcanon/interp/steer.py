@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import mlx.core as mx
-import mlx.nn as nn
 
 from kromcanon.model import GPT2
 
@@ -55,14 +54,13 @@ def steer_forward(
     b, t = input_ids.shape
     positions = mx.arange(t)
     x = model.wte(input_ids) + model.wpe(positions)
-    mask = nn.MultiHeadAttention.create_additive_causal_mask(t).astype(x.dtype)
 
     residuals: mx.array | None = None
     if model.kromhc_init is not None:
         residuals = model.kromhc_init(x)
 
     for i, block in enumerate(model.blocks):
-        x, residuals = block(x, mask=mask, residuals=residuals)
+        x, residuals = block(x, residuals=residuals)
 
         if i in steer_layers:
             if residuals is not None:
@@ -75,7 +73,7 @@ def steer_forward(
         x = model.kromhc_reduce(residuals)
 
     x = model.ln_f(x)
-    return model.lm_head(x)
+    return x @ model.wte.weight.T
 
 
 def steer_generate(
