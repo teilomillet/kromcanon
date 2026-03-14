@@ -381,3 +381,119 @@ run_name = "broken"
         nodes = [_node("x")]
         enriched = enrich_from_results(nodes, results)
         assert enriched[0].started_at == ""
+
+
+class TestInlineMetrics:
+    """Inline metrics extraction from results."""
+
+    def test_loss_extraction(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "results" / "exp1"
+        pretrain = run_dir / "pretrain"
+        pretrain.mkdir(parents=True)
+        (pretrain / "vanilla_logs.json").write_text(json.dumps([
+            {"step": 10, "loss": 11.0},
+            {"step": 100, "loss": 5.82},
+        ]))
+        (run_dir / "config.json").write_text(json.dumps({
+            "run_name": "exp1",
+            "started_at": "2026-03-10T10:00:00+00:00",
+        }))
+
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "exp1.toml").write_text("""
+[meta]
+title = "Test"
+
+[experiment]
+run_name = "exp1"
+""")
+
+        nodes = discover_experiments(exp_dir)
+        enriched = enrich_from_results(nodes, tmp_path / "results")
+        assert "loss:V=5.82" in enriched[0].metrics
+        assert "loss:V=5.82" in enriched[0].display_label
+
+    def test_multi_arch_loss(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "results" / "exp2"
+        pretrain = run_dir / "pretrain"
+        pretrain.mkdir(parents=True)
+        (pretrain / "vanilla_logs.json").write_text(json.dumps([
+            {"step": 100, "loss": 5.82},
+        ]))
+        (pretrain / "canon_logs.json").write_text(json.dumps([
+            {"step": 100, "loss": 5.75},
+        ]))
+        (pretrain / "kromcanon_logs.json").write_text(json.dumps([
+            {"step": 100, "loss": 5.69},
+        ]))
+        (run_dir / "config.json").write_text(json.dumps({
+            "run_name": "exp2",
+            "started_at": "2026-03-10T10:00:00+00:00",
+        }))
+
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "exp2.toml").write_text("""
+[meta]
+title = "Multi"
+
+[experiment]
+run_name = "exp2"
+""")
+
+        nodes = discover_experiments(exp_dir)
+        enriched = enrich_from_results(nodes, tmp_path / "results")
+        assert "V=5.82" in enriched[0].metrics
+        assert "C=5.75" in enriched[0].metrics
+        assert "K=5.69" in enriched[0].metrics
+
+    def test_refusal_extraction(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "results" / "exp3"
+        run_dir.mkdir(parents=True)
+        abl = run_dir / "abliteration"
+        abl.mkdir()
+        (abl / "refusal_rates.json").write_text(json.dumps({
+            "vanilla": {"before": 0.8, "after": 0.1},
+        }))
+        (run_dir / "config.json").write_text(json.dumps({
+            "run_name": "exp3",
+            "started_at": "2026-03-10T10:00:00+00:00",
+        }))
+
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "exp3.toml").write_text("""
+[meta]
+title = "Refusal"
+
+[experiment]
+run_name = "exp3"
+""")
+
+        nodes = discover_experiments(exp_dir)
+        enriched = enrich_from_results(nodes, tmp_path / "results")
+        assert "refusal:" in enriched[0].metrics
+        assert "80%→10%" in enriched[0].metrics
+
+    def test_no_metrics_when_empty(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "results" / "empty"
+        run_dir.mkdir(parents=True)
+        (run_dir / "config.json").write_text(json.dumps({
+            "run_name": "empty",
+            "started_at": "2026-03-10T10:00:00+00:00",
+        }))
+
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "empty.toml").write_text("""
+[meta]
+title = "Empty"
+
+[experiment]
+run_name = "empty"
+""")
+
+        nodes = discover_experiments(exp_dir)
+        enriched = enrich_from_results(nodes, tmp_path / "results")
+        assert enriched[0].metrics == ""

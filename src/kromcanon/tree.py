@@ -82,6 +82,7 @@ class ExperimentNode:
         completed_at: ISO timestamp from results (auto-set by runner).
         outcome: Last run outcome (``"success"``, ``"failed"``, or ``""``).
         run_count: Total number of runs (current + archived).
+        metrics: Key result numbers for inline display (e.g. ``"loss=5.82"``).
     """
 
     id: str
@@ -95,6 +96,7 @@ class ExperimentNode:
     completed_at: str = ""
     outcome: str = ""
     run_count: int = 0
+    metrics: str = ""
 
     @property
     def badge(self) -> str:
@@ -136,6 +138,8 @@ class ExperimentNode:
             suffix += " (FAILED)"
         if self.run_count > 1:
             suffix += f" (run {self.run_count})"
+        if self.metrics:
+            suffix += f"  {self.metrics}"
         return " ".join(parts) + suffix
 
 
@@ -182,23 +186,93 @@ def discover_experiments(directory: Path) -> list[ExperimentNode]:
 
 @dataclass(frozen=True, slots=True)
 class _ResultInfo:
-    """Run metadata extracted from a results ``config.json``."""
+    """Run metadata extracted from a results directory."""
 
     started_at: str
     completed_at: str
     outcome: str
     run_count: int
+    metrics: str
 
 
-def _read_result_info(config_path: Path) -> _ResultInfo | None:
-    """Read run info from a single results config.json.
+def _extract_metrics(results_dir: Path) -> str:
+    """Extract key result numbers from a results directory.
+
+    Reads training logs (final loss per architecture), refusal rates,
+    and KromHC analysis to produce a compact inline summary.
 
     Args:
-        config_path: Path to ``results/<run>/config.json``.
+        results_dir: Path to ``results/<run_name>/``.
+
+    Returns:
+        Compact metrics string, e.g. ``"loss:V=5.82,K=5.79 refusal:0.0→0.0"``.
+        Empty string if no results found.
+    """
+    parts: list[str] = []
+
+    # Final training loss per architecture
+    losses: dict[str, float] = {}
+    pretrain_dir = results_dir / "pretrain"
+    if pretrain_dir.is_dir():
+        for log_path in sorted(pretrain_dir.glob("*_logs.json")):
+            arch = log_path.stem.removesuffix("_logs")
+            try:
+                logs = json.loads(log_path.read_text())
+                if logs:
+                    losses[arch] = logs[-1]["loss"]
+            except Exception:  # noqa: BLE001
+                continue
+    if losses:
+        _arch_abbrev = {"vanilla": "V", "canon": "C", "kromcanon": "K", "kromhc": "H"}
+        loss_strs = [
+            f"{_arch_abbrev.get(a, a)}={v:.2f}" for a, v in losses.items()
+        ]
+        parts.append(f"loss:{','.join(loss_strs)}")
+
+    # Refusal rate delta (pick first architecture with a change, or summarize)
+    refusal_path = results_dir / "abliteration" / "refusal_rates.json"
+    if refusal_path.exists():
+        try:
+            rates = json.loads(refusal_path.read_text())
+            deltas: list[str] = []
+            for arch, r in rates.items():
+                before = r.get("before", 0.0)
+                after = r.get("after", 0.0)
+                if before != after:
+                    a = {"vanilla": "V", "canon": "C", "kromcanon": "K", "kromhc": "H"}
+                    deltas.append(f"{a.get(arch, arch)}:{before:.0%}→{after:.0%}")
+            if deltas:
+                parts.append(f"refusal:{','.join(deltas)}")
+        except Exception:  # noqa: BLE001
+            pass
+
+    # KromHC Frobenius from identity (how much mixing)
+    for name in ("kromhc_analysis_pretrain.json", "kromhc_analysis.json"):
+        hc_path = results_dir / name
+        if hc_path.exists():
+            try:
+                analysis = json.loads(hc_path.read_text())
+                summary = analysis.get("summary", {})
+                frob = summary.get("avg_frobenius_from_identity")
+                if frob is not None:
+                    parts.append(f"‖H-I‖={frob:.3f}")
+            except Exception:  # noqa: BLE001
+                pass
+            break
+
+    return " ".join(parts)
+
+
+def _read_result_info(results_dir: Path) -> _ResultInfo | None:
+    """Read run info and metrics from a results directory.
+
+    Args:
+        results_dir: Path to ``results/<run_name>/``.
 
     Returns:
         ``_ResultInfo`` or ``None`` on error.
     """
+    config_path = results_dir / "config.json"
     try:
         data = json.loads(config_path.read_text())
     except Exception:  # noqa: BLE001
@@ -209,6 +283,7 @@ def _read_result_info(config_path: Path) -> _ResultInfo | None:
         completed_at=data.get("completed_at", ""),
         outcome=data.get("outcome", ""),
         run_count=len(prev_runs) + (1 if data.get("started_at") else 0),
+        metrics=_extract_metrics(results_dir),
     )
 
 
@@ -232,10 +307,13 @@ def enrich_from_results(
     if not results_dir.is_dir():
         return nodes
 
-    # Index config.json by run_name and meta.id
+    # Index results by run_name and meta.id
     index: dict[str, _ResultInfo] = {}
-    for config_path in results_dir.glob("*/config.json"):
-        info = _read_result_info(config_path)
+    for run_dir in sorted(results_dir.iterdir()):
+        config_path = run_dir / "config.json"
+        if not config_path.exists():
+            continue
+        info = _read_result_info(run_dir)
         if info is None:
             continue
         try:
@@ -275,6 +353,7 @@ def enrich_from_results(
                 completed_at=info.completed_at,
                 outcome=info.outcome,
                 run_count=info.run_count,
+                metrics=info.metrics,
             ))
         else:
             enriched.append(node)

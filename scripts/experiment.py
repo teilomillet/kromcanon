@@ -1113,6 +1113,55 @@ def phase6_compare_and_plot(
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _check_parent_completion(cfg: ExperimentConfig) -> None:
+    """Warn if parent experiments have not completed successfully.
+
+    Checks for each parent listed in ``[meta].parents`` whether its
+    results directory exists and contains a ``config.json`` with
+    ``outcome: "success"``.  Prints warnings but does not block execution.
+
+    Args:
+        cfg: Experiment configuration.
+    """
+    if cfg.meta is None or not cfg.meta.parents:
+        return
+
+    for parent_id in cfg.meta.parents:
+        parent_results = _results_dir(parent_id)
+        config_path = parent_results / "config.json"
+
+        if not parent_results.exists():
+            print(f"  Warning: parent {parent_id!r} has no results directory")
+            continue
+
+        if not config_path.exists():
+            print(f"  Warning: parent {parent_id!r} has no config.json")
+            continue
+
+        try:
+            data = json.loads(config_path.read_text())
+        except Exception:  # noqa: BLE001
+            print(f"  Warning: parent {parent_id!r} config.json is unreadable")
+            continue
+
+        outcome = data.get("outcome", "")
+        if outcome == "failed":
+            print(f"  Warning: parent {parent_id!r} FAILED on last run")
+        elif outcome != "success":
+            # No outcome yet — check if any phase outputs exist
+            run_name = data.get("run_name", parent_id)
+            archs = data.get("architectures", [])
+            p_results = _results_dir(run_name)
+            has_outputs = any(
+                (p_results / "pretrain" / f"{a}_logs.json").exists()
+                for a in archs
+            )
+            if not has_outputs:
+                print(f"  Warning: parent {parent_id!r} has not been run yet")
+            elif not data.get("completed_at"):
+                print(f"  Warning: parent {parent_id!r} may not have completed")
+
+
 def run(cfg: ExperimentConfig, *, toml_path: Path | None = None) -> None:
     """Execute the full experiment pipeline from a loaded config.
 
@@ -1122,6 +1171,9 @@ def run(cfg: ExperimentConfig, *, toml_path: Path | None = None) -> None:
     """
     results = _results_dir(cfg.run_name)
     results.mkdir(parents=True, exist_ok=True)
+
+    # Check parent experiment completion
+    _check_parent_completion(cfg)
 
     # Auto-update TOML status to "running"
     if toml_path is not None:
