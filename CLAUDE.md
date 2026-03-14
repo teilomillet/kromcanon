@@ -211,35 +211,108 @@ For KromCanon, direction extraction must account for n=4 streams:
 
 ## Experiment Tracking
 
+Every experiment config includes a `[meta]` section for lineage tracking.
+The runner (`scripts/experiment.py`) reads it, persists it to results, and
+auto-manages status transitions and timestamps. The tree viewer
+(`python -m kromcanon.tree`) renders the full experiment DAG with inline
+metrics so you can see what ran, when, and how it went — at a glance.
+
 ### `[meta]` TOML section
 
-Every experiment config can include a `[meta]` section for lineage tracking.
-It does **not** affect pipeline execution.
+Does **not** affect pipeline execution — purely for discoverability.
 
 ```toml
 [meta]
 title = "Production baseline (seed=42)"
-status = "baseline"                      # wip | promising | dead_end | baseline | superseded | archived
-parents = ["quick"]                      # parent experiment ids (edges in the DAG)
-tags = ["all-arch", "seed-42"]           # free-form tags for filtering
+status = "baseline"           # wip | running | promising | dead_end | baseline | superseded | archived
+parents = ["quick"]           # parent experiment ids (edges in the DAG)
+tags = ["all-arch", "seed-42"]
 notes = "Base for all comparisons."
-date = 2026-03-10                        # TOML native date or ISO string
+date = 2026-03-10             # TOML native date or ISO string
 ```
 
-Fields: `id` (defaults to filename stem), `title`, `status`, `parents`, `tags`, `notes`, `date`.
-All optional except `id` (auto-derived).
+| Field     | Type         | Default         | Notes                                    |
+|-----------|--------------|-----------------|------------------------------------------|
+| `id`      | `str`        | filename stem   | Unique identifier, auto-derived if absent|
+| `title`   | `str`        | `""`            | Human-readable title                     |
+| `status`  | `str`        | `"wip"`         | See status lifecycle below               |
+| `parents` | `list[str]`  | `[]`            | Parent experiment ids (lineage edges)    |
+| `tags`    | `list[str]`  | `[]`            | Free-form tags for filtering             |
+| `notes`   | `str`        | `""`            | Multi-line notes (markdown OK)           |
+| `date`    | `str`/`date` | `""`            | Manual date; run timestamps are automatic|
+
+### Status lifecycle
+
+Status transitions are automatic when using `scripts/experiment.py`:
+
+```
+wip → running → promising   (success path)
+wip → running → wip         (failure — retryable)
+```
+
+Manual statuses for triage: `baseline`, `dead_end`, `superseded`, `archived`.
 
 ### Tree viewer
 
 ```bash
-python -m kromcanon.tree                              # experiments/ (default)
-python -m kromcanon.tree experiments/ --format mermaid # Mermaid flowchart
-python -m kromcanon.tree experiments/ --status wip     # filter by status
-python -m kromcanon.tree experiments/ --tag bias-sweep  # filter by tag
+python -m kromcanon.tree                                # experiments/ (default)
+python -m kromcanon.tree experiments/ --results results/ # with metrics + timestamps
+python -m kromcanon.tree experiments/ --format mermaid   # Mermaid flowchart
+python -m kromcanon.tree experiments/ --status promising # filter by status
+python -m kromcanon.tree experiments/ --tag bias-sweep   # filter by tag
 ```
 
-Source: `src/kromcanon/meta.py` (dataclass + parser), `src/kromcanon/tree.py` (discovery + rendering).
-Tests: `tests/test_meta.py`, `tests/test_tree.py`.
+Example output:
+
+```
+[BASE] 2026-03-13 22:06 Production baseline (seed=42)  loss:C=5.88,K=5.82,V=6.02 ‖H-I‖=0.001
+├── [OK+] 2026-03-14 00:13 Gating: bias=-2  loss:K=5.81 refusal:K:0%→2% ‖H-I‖=0.506
+│   ├── [OK+] 2026-03-14 02:26 Bias sweep: -1  loss:K=5.83 ‖H-I‖=1.023
+│   └── [OK+] 2026-03-14 03:32 Bias sweep: 0   loss:K=5.82 ‖H-I‖=1.799
+├── [WIP] Ablation: SFT size (FAILED) (run 2)
+└── [X] Ablation: H^res frozen
+```
+
+What the tree shows:
+- **Badge**: `[WIP]` `[RUN]` `[OK+]` `[X]` `[BASE]` `[OLD]` `[ARC]`
+- **Timestamp**: auto from `started_at` in `results/*/config.json` (YYYY-MM-DD HH:MM)
+- **Inline metrics**: final loss per arch, refusal delta, KromHC ‖H-I‖
+- **Failure/retry**: `(FAILED)` if last run crashed, `(run N)` if retried
+- **Tag summary**: counts at the bottom
+- **Warnings**: duplicate ids, dangling parents, cycles
+
+### Automatic timestamps
+
+The experiment runner stamps `started_at` (UTC ISO) when an experiment
+begins and `completed_at` + `elapsed_seconds` when it finishes. On rerun,
+previous runs are archived in a `"runs"` list inside `config.json` so no
+history is lost.
+
+### Inline metrics
+
+The tree extracts key numbers from results directories (`--results`):
+- **Loss**: final training loss per architecture from `pretrain/*_logs.json`
+- **Refusal delta**: before→after from `abliteration/refusal_rates.json` (only shown when non-zero)
+- **‖H-I‖**: avg Frobenius distance from identity from `kromhc_analysis*.json` (how much KromHC mixing)
+
+### Dependency guard
+
+When `run()` starts, it checks each parent in `[meta].parents`:
+- Warns if a parent's results directory is missing
+- Warns if a parent's last run failed
+- Warns if a parent has never been run
+
+Warnings only — never blocks. You can always run anyway.
+
+### Source files
+
+| File                      | What it does                              |
+|---------------------------|-------------------------------------------|
+| `src/kromcanon/meta.py`   | `MetaConfig` dataclass + `parse_meta()`   |
+| `src/kromcanon/tree.py`   | Discovery, graph, rendering, metrics, CLI |
+| `scripts/experiment.py`   | Runner integration (status, timestamps, guard) |
+| `tests/test_meta.py`      | 16 tests for meta parsing + validation    |
+| `tests/test_tree.py`      | 35 tests for tree, timestamps, metrics    |
 
 ## Typing Rules
 
