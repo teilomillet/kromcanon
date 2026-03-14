@@ -288,6 +288,7 @@ class TestTimestamps:
             "run_name": "my_run",
             "started_at": "2026-03-10T10:00:00+00:00",
             "completed_at": "2026-03-10T12:30:00+00:00",
+            "outcome": "success",
         }))
 
         # Create a matching experiment TOML
@@ -308,6 +309,66 @@ run_name = "my_run"
         assert enriched[0].started_at == "2026-03-10T10:00:00+00:00"
         assert enriched[0].completed_at == "2026-03-10T12:30:00+00:00"
         assert enriched[0].timestamp == "2026-03-10 10:00"
+        assert enriched[0].outcome == "success"
+        assert enriched[0].run_count == 1
+
+    def test_enrich_with_retries(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "results" / "flaky"
+        run_dir.mkdir(parents=True)
+        (run_dir / "config.json").write_text(json.dumps({
+            "run_name": "flaky",
+            "started_at": "2026-03-12T09:00:00+00:00",
+            "completed_at": "2026-03-12T09:30:00+00:00",
+            "outcome": "success",
+            "runs": [
+                {
+                    "started_at": "2026-03-11T08:00:00+00:00",
+                    "completed_at": "2026-03-11T08:05:00+00:00",
+                    "outcome": "failed",
+                },
+            ],
+        }))
+
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "flaky.toml").write_text("""
+[meta]
+title = "Flaky experiment"
+
+[experiment]
+run_name = "flaky"
+""")
+
+        nodes = discover_experiments(exp_dir)
+        enriched = enrich_from_results(nodes, tmp_path / "results")
+        assert enriched[0].run_count == 2
+        assert enriched[0].outcome == "success"
+        assert "run 2" in enriched[0].display_label
+
+    def test_enrich_failed_shows_marker(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "results" / "broken"
+        run_dir.mkdir(parents=True)
+        (run_dir / "config.json").write_text(json.dumps({
+            "run_name": "broken",
+            "started_at": "2026-03-11T08:00:00+00:00",
+            "completed_at": "2026-03-11T08:05:00+00:00",
+            "outcome": "failed",
+        }))
+
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "broken.toml").write_text("""
+[meta]
+title = "Broken experiment"
+
+[experiment]
+run_name = "broken"
+""")
+
+        nodes = discover_experiments(exp_dir)
+        enriched = enrich_from_results(nodes, tmp_path / "results")
+        assert enriched[0].outcome == "failed"
+        assert "(FAILED)" in enriched[0].display_label
 
     def test_enrich_no_results_dir(self) -> None:
         nodes = [_node("x")]

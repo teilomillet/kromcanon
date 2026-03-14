@@ -42,6 +42,7 @@ from kromcanon.meta import MetaConfig, parse_meta
 
 _BADGES: dict[str, str] = {
     "wip": "[WIP]",
+    "running": "[RUN]",
     "promising": "[OK+]",
     "dead_end": "[X]",
     "baseline": "[BASE]",
@@ -51,6 +52,7 @@ _BADGES: dict[str, str] = {
 
 _MERMAID_STYLES: dict[str, str] = {
     "wip": "fill:#fff3cd,stroke:#ffc107",
+    "running": "fill:#d1ecf1,stroke:#17a2b8",
     "promising": "fill:#d4edda,stroke:#28a745",
     "dead_end": "fill:#f8d7da,stroke:#dc3545",
     "baseline": "fill:#cce5ff,stroke:#007bff",
@@ -78,6 +80,8 @@ class ExperimentNode:
         date: ISO date string (from TOML ``[meta].date``).
         started_at: ISO timestamp from results (auto-set by runner).
         completed_at: ISO timestamp from results (auto-set by runner).
+        outcome: Last run outcome (``"success"``, ``"failed"``, or ``""``).
+        run_count: Total number of runs (current + archived).
     """
 
     id: str
@@ -89,6 +93,8 @@ class ExperimentNode:
     date: str = ""
     started_at: str = ""
     completed_at: str = ""
+    outcome: str = ""
+    run_count: int = 0
 
     @property
     def badge(self) -> str:
@@ -114,12 +120,23 @@ class ExperimentNode:
 
     @property
     def display_label(self) -> str:
-        """Badge + timestamp + title (or id if no title)."""
+        """Badge + timestamp + title (or id if no title).
+
+        Appends retry count if the experiment has been run more than once,
+        and a ``(FAILED)`` marker if the last run failed.
+        """
         label = self.title if self.title else self.id
         ts = self.timestamp
+        parts: list[str] = [self.badge]
         if ts:
-            return f"{self.badge} {ts} {label}"
-        return f"{self.badge} {label}"
+            parts.append(ts)
+        parts.append(label)
+        suffix = ""
+        if self.outcome == "failed":
+            suffix += " (FAILED)"
+        if self.run_count > 1:
+            suffix += f" (run {self.run_count})"
+        return " ".join(parts) + suffix
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -163,6 +180,38 @@ def discover_experiments(directory: Path) -> list[ExperimentNode]:
     return nodes
 
 
+@dataclass(frozen=True, slots=True)
+class _ResultInfo:
+    """Run metadata extracted from a results ``config.json``."""
+
+    started_at: str
+    completed_at: str
+    outcome: str
+    run_count: int
+
+
+def _read_result_info(config_path: Path) -> _ResultInfo | None:
+    """Read run info from a single results config.json.
+
+    Args:
+        config_path: Path to ``results/<run>/config.json``.
+
+    Returns:
+        ``_ResultInfo`` or ``None`` on error.
+    """
+    try:
+        data = json.loads(config_path.read_text())
+    except Exception:  # noqa: BLE001
+        return None
+    prev_runs: list[object] = data.get("runs", [])
+    return _ResultInfo(
+        started_at=data.get("started_at", ""),
+        completed_at=data.get("completed_at", ""),
+        outcome=data.get("outcome", ""),
+        run_count=len(prev_runs) + (1 if data.get("started_at") else 0),
+    )
+
+
 def enrich_from_results(
     nodes: list[ExperimentNode],
     results_dir: Path,
@@ -170,63 +219,50 @@ def enrich_from_results(
     """Enrich nodes with run timestamps from results ``config.json`` files.
 
     For each node, looks for ``results_dir/<run_name>/config.json`` and
-    reads ``started_at`` / ``completed_at`` fields written by the
-    experiment runner.
+    reads ``started_at``, ``completed_at``, ``outcome``, and ``runs``
+    history written by the experiment runner.
 
     Args:
         nodes: Discovered experiment nodes.
         results_dir: Path to the results directory (e.g. ``results/``).
 
     Returns:
-        New list of nodes with timestamps filled in where available.
+        New list of nodes with timestamps and run info filled in.
     """
     if not results_dir.is_dir():
         return nodes
 
-    # Index config.json files by run_name
-    timestamps: dict[str, tuple[str, str]] = {}
+    # Index config.json by run_name and meta.id
+    index: dict[str, _ResultInfo] = {}
     for config_path in results_dir.glob("*/config.json"):
+        info = _read_result_info(config_path)
+        if info is None:
+            continue
         try:
             data = json.loads(config_path.read_text())
         except Exception:  # noqa: BLE001
             continue
         run_name = data.get("run_name", "")
         if run_name:
-            timestamps[run_name] = (
-                data.get("started_at", ""),
-                data.get("completed_at", ""),
-            )
-
-    # Also index by meta.id (run_name and meta.id may differ)
-    for config_path in results_dir.glob("*/config.json"):
-        try:
-            data = json.loads(config_path.read_text())
-        except Exception:  # noqa: BLE001
-            continue
-        meta = data.get("meta", {})
-        meta_id = meta.get("id", "")
-        if meta_id and meta_id not in timestamps:
-            timestamps[meta_id] = (
-                data.get("started_at", ""),
-                data.get("completed_at", ""),
-            )
+            index[run_name] = info
+        meta_id = data.get("meta", {}).get("id", "")
+        if meta_id and meta_id not in index:
+            index[meta_id] = info
 
     enriched: list[ExperimentNode] = []
     for node in nodes:
-        # Try matching by id first, then by run_name-style matching
-        started, completed = timestamps.get(node.id, ("", ""))
-        if not started:
-            # The TOML run_name might differ from meta id — try the
-            # experiment section's run_name which equals the results dir name
+        # Try matching by id first, then by TOML run_name
+        info = index.get(node.id)
+        if info is None:
             try:
                 raw = tomllib.loads(node.path.read_text())
                 run_name = raw.get("experiment", {}).get("run_name", "")
                 if run_name:
-                    started, completed = timestamps.get(run_name, ("", ""))
+                    info = index.get(run_name)
             except Exception:  # noqa: BLE001
                 pass
 
-        if started or completed:
+        if info is not None:
             enriched.append(ExperimentNode(
                 id=node.id,
                 title=node.title,
@@ -235,8 +271,10 @@ def enrich_from_results(
                 tags=node.tags,
                 path=node.path,
                 date=node.date,
-                started_at=started,
-                completed_at=completed,
+                started_at=info.started_at,
+                completed_at=info.completed_at,
+                outcome=info.outcome,
+                run_count=info.run_count,
             ))
         else:
             enriched.append(node)

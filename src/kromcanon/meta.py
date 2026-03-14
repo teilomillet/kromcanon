@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 
 VALID_STATUSES: frozenset[str] = frozenset({
     "wip",
+    "running",
     "promising",
     "dead_end",
     "baseline",

@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 import tomllib
@@ -198,6 +199,29 @@ def load_config(toml_path: Path) -> ExperimentConfig:
         wandb_project=wb.get("project", "kromcanon"),
         meta=meta,
     )
+
+
+def _update_toml_status(toml_path: Path, new_status: str) -> None:
+    """Update the ``[meta] status`` field in a TOML file in-place.
+
+    Uses text-based replacement to preserve formatting and comments.
+    If the ``[meta]`` section or ``status`` key is missing, this is a no-op.
+
+    Args:
+        toml_path: Path to the experiment TOML file.
+        new_status: New status value (must be in ``VALID_STATUSES``).
+    """
+    text = toml_path.read_text()
+    # Match status = "..." within the [meta] section
+    updated = re.sub(
+        r'(^\s*status\s*=\s*")[^"]*(")',
+        rf"\g<1>{new_status}\2",
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if updated != text:
+        toml_path.write_text(updated)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1089,21 +1113,46 @@ def phase6_compare_and_plot(
 # ─────────────────────────────────────────────────────────────────────
 
 
-def run(cfg: ExperimentConfig) -> None:
+def run(cfg: ExperimentConfig, *, toml_path: Path | None = None) -> None:
     """Execute the full experiment pipeline from a loaded config.
 
     Args:
         cfg: Experiment configuration.
+        toml_path: Path to the source TOML file (for auto-status tracking).
     """
     results = _results_dir(cfg.run_name)
     results.mkdir(parents=True, exist_ok=True)
+
+    # Auto-update TOML status to "running"
+    if toml_path is not None:
+        _update_toml_status(toml_path, "running")
 
     # Set seeds for reproducibility
     np.random.seed(cfg.seed)
     mx.random.seed(cfg.seed)
 
-    # Persist the resolved config next to results (with automatic timestamp)
+    # Persist the resolved config next to results (with automatic timestamp).
+    # On rerun, previous runs are preserved in a "runs" history list so we
+    # never lose when an experiment was first attempted or how many times it
+    # was retried.
+    config_path = results / "config.json"
     started_at = datetime.now(UTC).isoformat()
+
+    # Load previous state if it exists (to preserve run history)
+    prev_runs: list[dict[str, str]] = []
+    if config_path.exists():
+        prev = json.loads(config_path.read_text())
+        prev_runs = prev.get("runs", [])
+        # Archive the previous run entry if it had a started_at
+        prev_started = prev.get("started_at", "")
+        if prev_started:
+            prev_runs.append({
+                "started_at": prev_started,
+                "completed_at": prev.get("completed_at", ""),
+                "elapsed_seconds": prev.get("elapsed_seconds", ""),
+                "outcome": prev.get("outcome", "unknown"),
+            })
+
     config_dict: dict[str, object] = {
         "run_name": cfg.run_name,
         "started_at": started_at,
@@ -1124,6 +1173,8 @@ def run(cfg: ExperimentConfig) -> None:
         "freeze_hres": cfg.freeze_hres,
         "wandb_enabled": cfg.wandb_enabled,
     }
+    if prev_runs:
+        config_dict["runs"] = prev_runs
     if cfg.meta is not None:
         config_dict["meta"] = {
             "id": cfg.meta.id,
@@ -1134,7 +1185,7 @@ def run(cfg: ExperimentConfig) -> None:
             "notes": cfg.meta.notes,
             "date": cfg.meta.date,
         }
-    (results / "config.json").write_text(json.dumps(config_dict, indent=2))
+    config_path.write_text(json.dumps(config_dict, indent=2))
 
     wb = WandbLogger(
         enabled=cfg.wandb_enabled,
@@ -1161,72 +1212,90 @@ def run(cfg: ExperimentConfig) -> None:
 
     t_start = time.perf_counter()
 
-    # Phase 1
-    if cfg.resume and _phase_complete(results, 1, cfg.architectures):
-        print("\nPhase 1: already complete, loading logs")
-        training_logs: dict[str, list[dict[str, float]]] = {}
-        for arch in cfg.architectures:
-            log_path = results / "pretrain" / f"{arch}_logs.json"
-            if log_path.exists():
-                training_logs[arch] = load_logs(log_path)
-    else:
-        training_logs = phase1_pretrain(cfg, results, wb)
+    try:
+        # Phase 1
+        if cfg.resume and _phase_complete(results, 1, cfg.architectures):
+            print("\nPhase 1: already complete, loading logs")
+            training_logs: dict[str, list[dict[str, float]]] = {}
+            for arch in cfg.architectures:
+                log_path = results / "pretrain" / f"{arch}_logs.json"
+                if log_path.exists():
+                    training_logs[arch] = load_logs(log_path)
+        else:
+            training_logs = phase1_pretrain(cfg, results, wb)
 
-    # KromHC diagnostics (post-pretrain)
-    if any(a in cfg.architectures for a in ("kromcanon", "kromhc")):
-        _log_kromhc_diagnostics(cfg, results, wb, phase="pretrain")
+        # KromHC diagnostics (post-pretrain)
+        if any(a in cfg.architectures for a in ("kromcanon", "kromhc")):
+            _log_kromhc_diagnostics(cfg, results, wb, phase="pretrain")
 
-    # Phase 2
-    if cfg.resume and _phase_complete(results, 2, cfg.architectures):
-        print("\nPhase 2: already complete")
-    else:
-        phase2_sft(cfg, results, wb)
+        # Phase 2
+        if cfg.resume and _phase_complete(results, 2, cfg.architectures):
+            print("\nPhase 2: already complete")
+        else:
+            phase2_sft(cfg, results, wb)
 
-    # Phase 3
-    if cfg.resume and _phase_complete(results, 3, cfg.architectures):
-        print("\nPhase 3: already complete, loading results")
-        extraction_results = _load_existing_extractions(results, cfg.architectures)
-    else:
-        extraction_results = phase3_extract(cfg, results, wb)
+        # Phase 3
+        if cfg.resume and _phase_complete(results, 3, cfg.architectures):
+            print("\nPhase 3: already complete, loading results")
+            extraction_results = _load_existing_extractions(results, cfg.architectures)
+        else:
+            extraction_results = phase3_extract(cfg, results, wb)
 
-    # Phase 4
-    if cfg.resume and _phase_complete(results, 4, cfg.architectures):
-        print("\nPhase 4: already complete, loading results")
-        refusal_rates = load_refusal_rates(
-            results / "abliteration" / "refusal_rates.json",
+        # Phase 4
+        if cfg.resume and _phase_complete(results, 4, cfg.architectures):
+            print("\nPhase 4: already complete, loading results")
+            refusal_rates = load_refusal_rates(
+                results / "abliteration" / "refusal_rates.json",
+            )
+        else:
+            refusal_rates = phase4_abliterate(cfg, results, extraction_results, wb)
+
+        # Phase 5
+        if cfg.resume and _phase_complete(results, 5, cfg.architectures):
+            print("\nPhase 5: already complete, loading results")
+            sweep_data: dict[str, tuple[list[float], np.ndarray]] = {}
+            for arch in cfg.architectures:
+                sweep_path = results / "steering" / f"{arch}_alpha_sweep"
+                if sweep_path.with_suffix(".npz").exists():
+                    alphas, logits = load_alpha_sweep(sweep_path)
+                    baseline_idx = alphas.index(0.0) if 0.0 in alphas else len(alphas) // 2
+                    kl_values = _compute_kl_from_baseline(logits, logits[baseline_idx])
+                    sweep_data[arch] = (alphas, kl_values)
+        else:
+            sweep_data = phase5_steering(cfg, results, extraction_results, wb)
+
+        # Phase 6
+        phase6_compare_and_plot(
+            cfg, results, training_logs, extraction_results,
+            refusal_rates, sweep_data, wb,
         )
-    else:
-        refusal_rates = phase4_abliterate(cfg, results, extraction_results, wb)
 
-    # Phase 5
-    if cfg.resume and _phase_complete(results, 5, cfg.architectures):
-        print("\nPhase 5: already complete, loading results")
-        sweep_data: dict[str, tuple[list[float], np.ndarray]] = {}
-        for arch in cfg.architectures:
-            sweep_path = results / "steering" / f"{arch}_alpha_sweep"
-            if sweep_path.with_suffix(".npz").exists():
-                alphas, logits = load_alpha_sweep(sweep_path)
-                baseline_idx = alphas.index(0.0) if 0.0 in alphas else len(alphas) // 2
-                kl_values = _compute_kl_from_baseline(logits, logits[baseline_idx])
-                sweep_data[arch] = (alphas, kl_values)
-    else:
-        sweep_data = phase5_steering(cfg, results, extraction_results, wb)
-
-    # Phase 6
-    phase6_compare_and_plot(
-        cfg, results, training_logs, extraction_results,
-        refusal_rates, sweep_data, wb,
-    )
+    except Exception:
+        # Record failure in config.json
+        elapsed = time.perf_counter() - t_start
+        failed_at = datetime.now(UTC).isoformat()
+        saved = json.loads(config_path.read_text())
+        saved["completed_at"] = failed_at
+        saved["elapsed_seconds"] = round(elapsed, 1)
+        saved["outcome"] = "failed"
+        config_path.write_text(json.dumps(saved, indent=2))
+        if toml_path is not None:
+            _update_toml_status(toml_path, "wip")
+        raise
 
     elapsed = time.perf_counter() - t_start
     completed_at = datetime.now(UTC).isoformat()
 
-    # Update config.json with completion timestamp
-    config_path = results / "config.json"
+    # Record success in config.json
     saved = json.loads(config_path.read_text())
     saved["completed_at"] = completed_at
     saved["elapsed_seconds"] = round(elapsed, 1)
+    saved["outcome"] = "success"
     config_path.write_text(json.dumps(saved, indent=2))
+
+    # Auto-update TOML status to "promising" on success
+    if toml_path is not None:
+        _update_toml_status(toml_path, "promising")
 
     print(f"\nExperiment complete in {elapsed / 60:.1f} minutes")
     print(f"Results: {results}/")
@@ -1247,7 +1316,7 @@ def main() -> None:
         sys.exit(1)
 
     cfg = load_config(toml_path)
-    run(cfg)
+    run(cfg, toml_path=toml_path)
 
 
 if __name__ == "__main__":
