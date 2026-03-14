@@ -209,6 +209,38 @@ For KromCanon, direction extraction must account for n=4 streams:
 - Training budget: ~30-40 min per 125M variant
 - Total: ~2 hours for all three variants + safety fine-tuning
 
+## Experiment Tracking
+
+### `[meta]` TOML section
+
+Every experiment config can include a `[meta]` section for lineage tracking.
+It does **not** affect pipeline execution.
+
+```toml
+[meta]
+title = "Production baseline (seed=42)"
+status = "baseline"                      # wip | promising | dead_end | baseline | superseded | archived
+parents = ["quick"]                      # parent experiment ids (edges in the DAG)
+tags = ["all-arch", "seed-42"]           # free-form tags for filtering
+notes = "Base for all comparisons."
+date = 2026-03-10                        # TOML native date or ISO string
+```
+
+Fields: `id` (defaults to filename stem), `title`, `status`, `parents`, `tags`, `notes`, `date`.
+All optional except `id` (auto-derived).
+
+### Tree viewer
+
+```bash
+python -m kromcanon.tree                              # experiments/ (default)
+python -m kromcanon.tree experiments/ --format mermaid # Mermaid flowchart
+python -m kromcanon.tree experiments/ --status wip     # filter by status
+python -m kromcanon.tree experiments/ --tag bias-sweep  # filter by tag
+```
+
+Source: `src/kromcanon/meta.py` (dataclass + parser), `src/kromcanon/tree.py` (discovery + rendering).
+Tests: `tests/test_meta.py`, `tests/test_tree.py`.
+
 ## Typing Rules
 
 - All code must be fully typed. Every function parameter, return type, and variable.
