@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from kromcanon.tree import (
     ExperimentNode,
     build_graph,
     discover_experiments,
+    enrich_from_results,
     filter_nodes,
     render_mermaid,
     render_text_tree,
@@ -225,3 +227,88 @@ run_name = "test"
     def test_empty_directory(self, tmp_path: Path) -> None:
         nodes = discover_experiments(tmp_path)
         assert len(nodes) == 0
+
+
+class TestTimestamps:
+    """Automatic timestamp enrichment from results."""
+
+    def test_node_timestamp_prefers_completed(self) -> None:
+        node = ExperimentNode(
+            id="x", title="X", status="wip", parents=[], tags=[],
+            path=Path("x.toml"), date="2026-01-01",
+            started_at="2026-03-10T10:00:00+00:00",
+            completed_at="2026-03-10T12:30:00+00:00",
+        )
+        assert node.timestamp == "2026-03-10"
+
+    def test_node_timestamp_falls_back_to_started(self) -> None:
+        node = ExperimentNode(
+            id="x", title="X", status="wip", parents=[], tags=[],
+            path=Path("x.toml"),
+            started_at="2026-03-10T10:00:00+00:00",
+        )
+        assert node.timestamp == "2026-03-10"
+
+    def test_node_timestamp_falls_back_to_date(self) -> None:
+        node = ExperimentNode(
+            id="x", title="X", status="wip", parents=[], tags=[],
+            path=Path("x.toml"), date="2026-01-15",
+        )
+        assert node.timestamp == "2026-01-15"
+
+    def test_node_timestamp_empty_when_no_dates(self) -> None:
+        node = _node("x")
+        assert node.timestamp == ""
+
+    def test_display_label_includes_timestamp(self) -> None:
+        node = ExperimentNode(
+            id="x", title="My experiment", status="wip", parents=[], tags=[],
+            path=Path("x.toml"),
+            completed_at="2026-03-10T12:30:00+00:00",
+        )
+        assert node.display_label == "[WIP] 2026-03-10 My experiment"
+
+    def test_display_label_without_timestamp(self) -> None:
+        node = _node("x", title="My experiment")
+        assert node.display_label == "[WIP] My experiment"
+
+    def test_enrich_from_results(self, tmp_path: Path) -> None:
+        # Create a results directory with config.json
+        run_dir = tmp_path / "results" / "my_run"
+        run_dir.mkdir(parents=True)
+        (run_dir / "config.json").write_text(json.dumps({
+            "run_name": "my_run",
+            "started_at": "2026-03-10T10:00:00+00:00",
+            "completed_at": "2026-03-10T12:30:00+00:00",
+        }))
+
+        # Create a matching experiment TOML
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "my_run.toml").write_text("""
+[meta]
+title = "My run"
+
+[experiment]
+run_name = "my_run"
+""")
+
+        nodes = discover_experiments(exp_dir)
+        assert nodes[0].started_at == ""
+
+        enriched = enrich_from_results(nodes, tmp_path / "results")
+        assert enriched[0].started_at == "2026-03-10T10:00:00+00:00"
+        assert enriched[0].completed_at == "2026-03-10T12:30:00+00:00"
+        assert enriched[0].timestamp == "2026-03-10"
+
+    def test_enrich_no_results_dir(self) -> None:
+        nodes = [_node("x")]
+        enriched = enrich_from_results(nodes, Path("/nonexistent"))
+        assert enriched == nodes
+
+    def test_enrich_no_matching_results(self, tmp_path: Path) -> None:
+        results = tmp_path / "results"
+        results.mkdir()
+        nodes = [_node("x")]
+        enriched = enrich_from_results(nodes, results)
+        assert enriched[0].started_at == ""

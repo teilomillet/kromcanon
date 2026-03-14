@@ -23,6 +23,7 @@ import sys
 import time
 import tomllib
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import mlx.core as mx
@@ -1101,9 +1102,11 @@ def run(cfg: ExperimentConfig) -> None:
     np.random.seed(cfg.seed)
     mx.random.seed(cfg.seed)
 
-    # Persist the resolved config next to results
+    # Persist the resolved config next to results (with automatic timestamp)
+    started_at = datetime.now(UTC).isoformat()
     config_dict: dict[str, object] = {
         "run_name": cfg.run_name,
+        "started_at": started_at,
         "seed": cfg.seed,
         "depth": cfg.depth,
         "size": cfg.size,
@@ -1216,6 +1219,15 @@ def run(cfg: ExperimentConfig) -> None:
     )
 
     elapsed = time.perf_counter() - t_start
+    completed_at = datetime.now(UTC).isoformat()
+
+    # Update config.json with completion timestamp
+    config_path = results / "config.json"
+    saved = json.loads(config_path.read_text())
+    saved["completed_at"] = completed_at
+    saved["elapsed_seconds"] = round(elapsed, 1)
+    config_path.write_text(json.dumps(saved, indent=2))
+
     print(f"\nExperiment complete in {elapsed / 60:.1f} minutes")
     print(f"Results: {results}/")
 

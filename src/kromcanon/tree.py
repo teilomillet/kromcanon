@@ -26,6 +26,7 @@ are all missing) become roots.  Status badges show progress at a glance::
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import tomllib
@@ -74,7 +75,9 @@ class ExperimentNode:
         parents: Parent experiment ids.
         tags: Free-form tags.
         path: Filesystem path to the TOML config.
-        date: ISO date string.
+        date: ISO date string (from TOML ``[meta].date``).
+        started_at: ISO timestamp from results (auto-set by runner).
+        completed_at: ISO timestamp from results (auto-set by runner).
     """
 
     id: str
@@ -84,6 +87,8 @@ class ExperimentNode:
     tags: list[str]
     path: Path
     date: str = ""
+    started_at: str = ""
+    completed_at: str = ""
 
     @property
     def badge(self) -> str:
@@ -91,9 +96,21 @@ class ExperimentNode:
         return _BADGES.get(self.status, f"[{self.status.upper()}]")
 
     @property
+    def timestamp(self) -> str:
+        """Best available date for display (completed > started > meta date)."""
+        for ts in (self.completed_at, self.started_at, self.date):
+            if ts:
+                # Show just the date portion for compact display
+                return ts[:10]
+        return ""
+
+    @property
     def display_label(self) -> str:
-        """Badge + title (or id if no title)."""
+        """Badge + timestamp + title (or id if no title)."""
         label = self.title if self.title else self.id
+        ts = self.timestamp
+        if ts:
+            return f"{self.badge} {ts} {label}"
         return f"{self.badge} {label}"
 
 
@@ -136,6 +153,87 @@ def discover_experiments(directory: Path) -> list[ExperimentNode]:
             date=meta.date,
         ))
     return nodes
+
+
+def enrich_from_results(
+    nodes: list[ExperimentNode],
+    results_dir: Path,
+) -> list[ExperimentNode]:
+    """Enrich nodes with run timestamps from results ``config.json`` files.
+
+    For each node, looks for ``results_dir/<run_name>/config.json`` and
+    reads ``started_at`` / ``completed_at`` fields written by the
+    experiment runner.
+
+    Args:
+        nodes: Discovered experiment nodes.
+        results_dir: Path to the results directory (e.g. ``results/``).
+
+    Returns:
+        New list of nodes with timestamps filled in where available.
+    """
+    if not results_dir.is_dir():
+        return nodes
+
+    # Index config.json files by run_name
+    timestamps: dict[str, tuple[str, str]] = {}
+    for config_path in results_dir.glob("*/config.json"):
+        try:
+            data = json.loads(config_path.read_text())
+        except Exception:  # noqa: BLE001
+            continue
+        run_name = data.get("run_name", "")
+        if run_name:
+            timestamps[run_name] = (
+                data.get("started_at", ""),
+                data.get("completed_at", ""),
+            )
+
+    # Also index by meta.id (run_name and meta.id may differ)
+    for config_path in results_dir.glob("*/config.json"):
+        try:
+            data = json.loads(config_path.read_text())
+        except Exception:  # noqa: BLE001
+            continue
+        meta = data.get("meta", {})
+        meta_id = meta.get("id", "")
+        if meta_id and meta_id not in timestamps:
+            timestamps[meta_id] = (
+                data.get("started_at", ""),
+                data.get("completed_at", ""),
+            )
+
+    enriched: list[ExperimentNode] = []
+    for node in nodes:
+        # Try matching by id first, then by run_name-style matching
+        started, completed = timestamps.get(node.id, ("", ""))
+        if not started:
+            # The TOML run_name might differ from meta id — try the
+            # experiment section's run_name which equals the results dir name
+            try:
+                raw = tomllib.loads(node.path.read_text())
+                run_name = raw.get("experiment", {}).get("run_name", "")
+                if run_name:
+                    started, completed = timestamps.get(run_name, ("", ""))
+            except Exception:  # noqa: BLE001
+                pass
+
+        if started or completed:
+            enriched.append(ExperimentNode(
+                id=node.id,
+                title=node.title,
+                status=node.status,
+                parents=node.parents,
+                tags=node.tags,
+                path=node.path,
+                date=node.date,
+                started_at=started,
+                completed_at=completed,
+            ))
+        else:
+            enriched.append(node)
+
+    return enriched
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -418,6 +516,11 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="Filter by tag",
     )
+    parser.add_argument(
+        "--results",
+        default="results",
+        help="Results directory for run timestamps (default: results/)",
+    )
     args = parser.parse_args(argv)
 
     directory = Path(args.directory)
@@ -429,6 +532,10 @@ def main(argv: list[str] | None = None) -> None:
     if not nodes:
         print(f"No TOML files found in {directory}", file=sys.stderr)
         sys.exit(1)
+
+    # Enrich with run timestamps from results directory
+    results_dir = Path(args.results)
+    nodes = enrich_from_results(nodes, results_dir)
 
     nodes = filter_nodes(nodes, status=args.status, tag=args.tag)
     if not nodes:
