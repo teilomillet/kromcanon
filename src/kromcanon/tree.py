@@ -97,11 +97,19 @@ class ExperimentNode:
 
     @property
     def timestamp(self) -> str:
-        """Best available date for display (completed > started > meta date)."""
-        for ts in (self.completed_at, self.started_at, self.date):
+        """Best available date+time for display (started > completed > meta date).
+
+        Uses ``started_at`` for chronological ordering (when the experiment
+        began), falls back to ``completed_at`` then manual ``date``.
+        Shows date+time (``YYYY-MM-DD HH:MM``) for run timestamps,
+        date-only for manual ``[meta].date``.
+        """
+        for ts in (self.started_at, self.completed_at):
             if ts:
-                # Show just the date portion for compact display
-                return ts[:10]
+                # ISO format: 2026-03-14T08:13:15+00:00 → 2026-03-14 08:13
+                return ts[:16].replace("T", " ")
+        if self.date:
+            return self.date[:10]
         return ""
 
     @property
