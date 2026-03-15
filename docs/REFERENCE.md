@@ -37,7 +37,7 @@ Canon layers are inserted at up to **four points** per transformer block:
 - **Canon-C** (pre-MLP): applied after attention residual, before feedforward
 - **Canon-D** (MLP internal): applied to concatenated gate and up projections inside MLP
 
-The standard useful set is **A+B** (referred to as "AB" in configs). Full set is "ABCD".
+The optimal set is **ABCD** (default in our implementation). Canon-ACD often matches ABCD, suggesting Canon-B is least critical.
 
 ### Core Implementation
 
@@ -96,7 +96,7 @@ x = x + ffn(h)
 ### Config Parameters
 
 ```python
-canon_set: str = ""       # Which canon layers: "", "A", "AB", "ABCD"
+canon_set: str = "ABCD"   # Which canon layers: "", "A", "AB", "ABCD"
 canon_bias: bool = False  # Bias in conv
 canon_activation: bool = False  # SiLU activation
 canon_kernel: int = 4     # Kernel size
@@ -111,6 +111,28 @@ canon_residual: bool = True  # Residual connection around canon
 - Knowledge capacity: +10-15%
 - Works across: Transformers, linear attention (GLA, GDN), SSMs (Mamba2)
 - Pretrained models: 1B, 3B, 8B Llama/LlamaCanon on HuggingFace
+
+### Ablation Findings (from Part 4.1)
+
+- **Canon-ACD alone** often matches Canon-ABCD performance
+- **Recommended config**: Canon-AbCD(res) for balanced gains
+- **Residual connections essential**: Non-residual variants show "slower and less stable" training
+- **No activations needed**: Adding SiLU after Canon layers provides no benefit
+- **Canon contributions are cumulative and independent** of attention/MLP
+- Canon-B without residual (Canon-B(no-res)) performs noticeably worse
+
+### Canon-C/D Details
+
+- **Canon-C** (pre-MLP): Placed after RMSNorm, before feedforward. Dimension = d_model. Implemented in `TransformerBlock._ffn_branch()`.
+- **Canon-D** (MLP internal): Placed after up-projection, before GELU activation. Dimension = d_ff (2048 for small). Implemented in `FeedForward.__call__()`.
+- **Runtime overhead (H100)**: Canon-ABCD: forward 12.4%, backward 14.1%, generation 20.8%. Canon-AC only: 5.8%, 5.8%, 7.0%.
+- **Interaction with RoPE**: Canon enables reducing RoPE usage. RoPE on 1/4 dimensions + Canon outperforms full RoPE + Canon.
+- **Interaction with GatedMLP**: Canon partially recovers capacity loss from gating.
+- **Mamba2's conv1d** identified as partial Canon-B; contributes more to Mamba2's performance than its SSM formulation.
+
+### KromCanon Implementation Status
+
+Full Canon-ABCD implemented. Default `canon_set = "ABCD"` matching the paper's recommended Canon-AbCD(res) configuration. Parameter overhead: Canon-ABCD = +0.29% (51.34M vs 51.19M vanilla at 8L512D).
 
 ### Inference Caching
 

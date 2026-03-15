@@ -48,6 +48,7 @@ _BADGES: dict[str, str] = {
     "baseline": "[BASE]",
     "superseded": "[OLD]",
     "archived": "[ARC]",
+    "parked": "[---]",
 }
 
 _MERMAID_STYLES: dict[str, str] = {
@@ -58,6 +59,7 @@ _MERMAID_STYLES: dict[str, str] = {
     "baseline": "fill:#cce5ff,stroke:#007bff",
     "superseded": "fill:#e2e3e5,stroke:#6c757d",
     "archived": "fill:#e2e3e5,stroke:#6c757d",
+    "parked": "fill:#f0e6ff,stroke:#9b59b6",
 }
 
 

@@ -7,7 +7,7 @@ A research project studying how steering vectors and linear direction extraction
 ### The Three Variants
 
 1. **Vanilla** — standard GPT-2 124M (baseline)
-2. **Canon** — GPT-2 124M + Canon layers (1-D causal conv, kernel=4, before attention and on Q/K/V)
+2. **Canon** — GPT-2 124M + Canon layers (1-D causal conv, kernel=4, ABCD placement: pre-attention, on Q/K/V, pre-MLP, inside MLP)
 3. **KromCanon** — GPT-2 124M + Canon layers + KromHC residual connections (Kronecker-product doubly stochastic multi-stream mixing, n=4 streams)
 
 ### The Research Question
@@ -23,11 +23,13 @@ Specifically:
 
 ### Canon Layers (Allen-Zhu, Part 4.1 — arxiv.org/abs/2512.17351)
 
-Trainable 1-D causal convolutions (kernel size 4) inserted at two points per transformer block:
+Trainable 1-D causal convolutions (kernel size 4) inserted at four points per transformer block (ABCD):
 - **Canon-A**: before attention — local token mixing in the residual stream
 - **Canon-B**: applied to Q, K, V projections inside attention
+- **Canon-C**: before MLP — local mixing after attention, before feedforward
+- **Canon-D**: inside MLP — applied after up-projection, before GELU activation (operates at d_ff dimension)
 
-~0.5% parameter overhead. Improves reasoning depth 2-4x, knowledge capacity +10-15%.
+~0.29% parameter overhead (ABCD). Improves reasoning depth 2-4x, knowledge capacity +10-15%.
 
 Key property: **architecture-agnostic** — works with transformers, linear attention, SSMs.
 

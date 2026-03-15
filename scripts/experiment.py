@@ -471,24 +471,41 @@ def phase1_pretrain(
     print("PHASE 1: Pretraining")
     print("=" * 60)
 
-    from transformers import AutoTokenizer
+    from kromcanon.data import _cache_path, prepare_pretraining_data
 
-    from kromcanon.data import load_fineweb_edu, prepare_pretraining_data
-
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-
-    print("Loading FineWeb-Edu dataset...")
-    texts = load_fineweb_edu()
     model_config = make_config(depth=cfg.depth, size=cfg.size)
     cache_dir = Path("results") / ".cache"
-    sequences = prepare_pretraining_data(
-        texts=texts,
-        encode_fn=tokenizer.encode,
-        seq_len=model_config.max_seq_len,
-        max_tokens=cfg.pretrain_max_tokens,
-        cache_dir=cache_dir,
-    )
-    print(f"  Packed {len(sequences):,} sequences")
+
+    # Check cache first to skip expensive HF dataset streaming init
+    cp = _cache_path(model_config.max_seq_len, cfg.pretrain_max_tokens, cache_dir)
+    if cp is not None and cp.exists():
+        t0 = time.perf_counter()
+        import numpy as np
+
+        sequences = np.load(cp)
+        print(f"  Loaded {len(sequences):,} cached sequences in "
+              f"{time.perf_counter() - t0:.1f}s ({cp})")
+    else:
+        from transformers import AutoTokenizer
+
+        from kromcanon.data import load_fineweb_edu
+
+        t0 = time.perf_counter()
+        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        print(f"  Tokenizer loaded in {time.perf_counter() - t0:.1f}s")
+
+        t1 = time.perf_counter()
+        print("  Streaming FineWeb-Edu dataset...")
+        texts = load_fineweb_edu()
+        sequences = prepare_pretraining_data(
+            texts=texts,
+            encode_fn=tokenizer.encode,
+            seq_len=model_config.max_seq_len,
+            max_tokens=cfg.pretrain_max_tokens,
+            cache_dir=cache_dir,
+        )
+        print(f"  Tokenized + packed {len(sequences):,} sequences in "
+              f"{time.perf_counter() - t1:.1f}s")
 
     n_eval = max(len(sequences) // 100, 1)
     eval_seqs = sequences[:n_eval]
@@ -567,18 +584,22 @@ def phase2_sft(
 
     from transformers import AutoTokenizer
 
+    t0 = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    print(f"  Tokenizer loaded in {time.perf_counter() - t0:.1f}s")
 
-    print("Loading safety datasets...")
+    t1 = time.perf_counter()
+    print("  Loading safety datasets...")
     hh_pairs = load_hh_rlhf(max_examples=cfg.sft_max_examples)
     bt_pairs = load_beavertails(max_examples=cfg.sft_max_examples)
     all_pairs = hh_pairs + bt_pairs
-    print(f"  Total pairs: {len(all_pairs)}")
+    print(f"  Total pairs: {len(all_pairs)} ({time.perf_counter() - t1:.1f}s)")
 
+    t2 = time.perf_counter()
     sequences = tokenize_conversations(
         all_pairs, encode_fn=tokenizer.encode, max_len=512,
     )
-    print(f"  Tokenized: {len(sequences)} sequences")
+    print(f"  Tokenized: {len(sequences)} sequences ({time.perf_counter() - t2:.1f}s)")
 
     all_logs: dict[str, list[dict[str, float]]] = {}
 
@@ -1236,6 +1257,8 @@ def run(cfg: ExperimentConfig, *, toml_path: Path | None = None) -> None:
             "tags": cfg.meta.tags,
             "notes": cfg.meta.notes,
             "date": cfg.meta.date,
+            "justification": cfg.meta.justification,
+            "comments": cfg.meta.comments,
         }
     config_path.write_text(json.dumps(config_dict, indent=2))
 

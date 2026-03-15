@@ -136,3 +136,68 @@ class TestCanonB:
         q_out, k_out, v_out = apply_canon_b(canon_b, q, k, v)
         # With random weights and no residual, output should differ from input
         assert mx.max(mx.abs(q_out - q)).item() > 1e-6
+
+
+class TestCanonCD:
+    """Tests for Canon-C (pre-MLP) and Canon-D (inside MLP)."""
+
+    def test_canon_c_placement(self) -> None:
+        """Canon-C is applied before FFN, changes block output."""
+        from kromcanon.config import ModelConfig
+        from kromcanon.model import TransformerBlock
+
+        config = ModelConfig(arch="vanilla", n_layers=1, n_heads=4, d_model=64, d_ff=256)
+        # Manually enable Canon-C only
+        config.canon = CanonConfig(enabled=True, canon_set="C")
+        block = TransformerBlock(config, layer_index=0)
+
+        assert block.canon_c is not None
+        assert block.canon_a is None  # Only C enabled
+        x = mx.random.normal((1, 8, 64))
+        out, _ = block(x)
+        assert out.shape == (1, 8, 64)
+
+    def test_canon_d_placement(self) -> None:
+        """Canon-D is inside FFN, changes FFN output."""
+        from kromcanon.config import ModelConfig
+        from kromcanon.model import FeedForward
+
+        config = ModelConfig(arch="vanilla", n_layers=1, n_heads=4, d_model=64, d_ff=256)
+        config.canon = CanonConfig(enabled=True, canon_set="D")
+        ffn = FeedForward(config)
+
+        assert ffn.canon_d is not None
+        assert ffn.canon_d.conv.d_model == 256  # d_ff, not d_model
+        x = mx.random.normal((1, 8, 64))
+        out = ffn(x)
+        assert out.shape == (1, 8, 64)
+
+    def test_canon_abcd_full(self) -> None:
+        """Full ABCD configuration creates all four Canon layers."""
+        from kromcanon.config import ModelConfig
+        from kromcanon.model import TransformerBlock
+
+        config = ModelConfig(arch="vanilla", n_layers=1, n_heads=4, d_model=64, d_ff=256)
+        config.canon = CanonConfig(enabled=True, canon_set="ABCD")
+        block = TransformerBlock(config, layer_index=0)
+
+        assert block.canon_a is not None
+        assert block.attn.canon_b is not None
+        assert block.canon_c is not None
+        assert block.ffn.canon_d is not None
+
+        x = mx.random.normal((1, 8, 64))
+        out, _ = block(x)
+        assert out.shape == (1, 8, 64)
+
+    def test_canon_d_dimension(self) -> None:
+        """Canon-D operates at d_ff dimension, not d_model."""
+        from kromcanon.config import ModelConfig
+        from kromcanon.model import FeedForward
+
+        config = ModelConfig(arch="vanilla", n_layers=1, n_heads=4, d_model=64, d_ff=256)
+        config.canon = CanonConfig(enabled=True, canon_set="D")
+        ffn = FeedForward(config)
+
+        # Canon-D conv weight should be (d_ff, kernel_size)
+        assert ffn.canon_d.conv.weight.shape == (256, 4)

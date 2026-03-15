@@ -16,6 +16,11 @@ Schema
     tags    = ["all-arch", "seed-42"]    # free-form tags for filtering
     date    = 2026-03-10                 # ISO date (TOML native or string)
     notes   = "Base for all comparisons."
+    justification = "Why: base config for all Phase 1 comparisons."
+    comments = [
+        "2026-03-14: Re-run with Canon-ABCD init fix",
+        "2026-03-14: Eval loss ordering K < C < V",
+    ]
 
 Every field except ``id`` is optional.  When ``id`` is omitted the TOML
 filename stem is used.
@@ -34,6 +39,7 @@ VALID_STATUSES: frozenset[str] = frozenset({
     "baseline",
     "superseded",
     "archived",
+    "parked",
 })
 
 
@@ -49,6 +55,8 @@ class MetaConfig:
         tags: Free-form tags for filtering.
         notes: Multi-line notes (markdown-compatible).
         date: ISO 8601 date string.
+        justification: Why this experiment exists — what question it answers.
+        comments: Timestamped observations, one string per comment.
     """
 
     id: str
@@ -58,6 +66,8 @@ class MetaConfig:
     tags: list[str] = field(default_factory=list)
     notes: str = ""
     date: str = ""
+    justification: str = ""
+    comments: list[str] = field(default_factory=list)
 
 
 def parse_meta(
@@ -147,6 +157,27 @@ def parse_meta(
         msg = f"meta.date must be a string or date, got {type(raw_date).__name__}"
         raise TypeError(msg)
 
+    # --- justification ---
+    justification = section.get("justification", "")
+    if not isinstance(justification, str):
+        msg = (
+            "meta.justification must be a string, "
+            f"got {type(justification).__name__}"
+        )
+        raise TypeError(msg)
+
+    # --- comments ---
+    comments = section.get("comments", [])
+    if not isinstance(comments, list):
+        msg = f"meta.comments must be a list, got {type(comments).__name__}"
+        raise TypeError(msg)
+    for i, c in enumerate(comments):
+        if not isinstance(c, str):
+            msg = (
+                f"meta.comments[{i}] must be a string, got {c!r}"
+            )
+            raise ValueError(msg)
+
     return MetaConfig(
         id=meta_id,
         title=title,
@@ -155,4 +186,6 @@ def parse_meta(
         tags=list(tags),
         notes=notes.strip(),
         date=date_str,
+        justification=justification.strip(),
+        comments=list(comments),
     )

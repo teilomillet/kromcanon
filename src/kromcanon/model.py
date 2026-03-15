@@ -2,7 +2,7 @@
 
 Supports three modes:
 - vanilla: Standard GPT-2 decoder-only transformer
-- canon: GPT-2 + Canon layers (1-D causal conv before attention and on Q/K/V)
+- canon: GPT-2 + Canon layers (A: pre-attention, B: on QKV, C: pre-MLP, D: inside MLP)
 - kromcanon: GPT-2 + Canon layers + KromHC multi-stream residual connections
 """
 
@@ -79,7 +79,11 @@ class CausalSelfAttention(nn.Module):
 
 
 class FeedForward(nn.Module):
-    """Feed-forward network with GELU activation.
+    """Feed-forward network with GELU activation and optional Canon-D.
+
+    Canon-D is applied after the first linear projection (up-projection),
+    before the activation function. This enables local token mixing in the
+    expanded MLP space (d_ff dimensions).
 
     Args:
         config: Model configuration.
@@ -90,6 +94,11 @@ class FeedForward(nn.Module):
         self.fc1 = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.fc2 = nn.Linear(config.d_ff, config.d_model, bias=False)
 
+        # Canon-D: applied after up-projection, before activation
+        self.canon_d: CanonLayer | None = None
+        if config.canon.enabled and "D" in config.canon.canon_set:
+            self.canon_d = CanonLayer(d_model=config.d_ff, config=config.canon)
+
     def __call__(self, x: mx.array) -> mx.array:
         """Forward pass.
 
@@ -99,7 +108,10 @@ class FeedForward(nn.Module):
         Returns:
             Output tensor, shape (batch, seq_len, d_model).
         """
-        return self.fc2(nn.gelu(self.fc1(x)))
+        h = self.fc1(x)
+        if self.canon_d is not None:
+            h = self.canon_d(h)
+        return self.fc2(nn.gelu(h))
 
 
 class TransformerBlock(nn.Module):
@@ -109,10 +121,11 @@ class TransformerBlock(nn.Module):
         x = x + attn(norm1(x))
         x = x + ffn(norm2(x))
 
-    Canon:
-        h = canon_a(norm1(x))
+    Canon (with canon_set="ABCD"):
+        h = canon_a(norm1(x))     (Canon-A: pre-attention mixing)
         x = x + attn(h)          (attn internally applies Canon-B to QKV)
-        x = x + ffn(norm2(x))
+        h = canon_c(norm2(x))    (Canon-C: pre-MLP mixing)
+        x = x + ffn(h)           (ffn internally applies Canon-D before activation)
 
     KromCanon:
         Uses KromHC residual connections for both attn and ffn branches.
@@ -138,6 +151,11 @@ class TransformerBlock(nn.Module):
         self.canon_a: CanonLayer | None = None
         if config.canon.enabled and "A" in config.canon.canon_set:
             self.canon_a = CanonLayer(d_model=config.d_model, config=config.canon)
+
+        # Canon-C: pre-MLP local mixing (after norm2, before FFN)
+        self.canon_c: CanonLayer | None = None
+        if config.canon.enabled and "C" in config.canon.canon_set:
+            self.canon_c = CanonLayer(d_model=config.d_model, config=config.canon)
 
         # KromHC: one layer per branch (attn and ffn)
         self.kromhc_attn: KromHCLayer | None = None
@@ -174,7 +192,7 @@ class TransformerBlock(nn.Module):
         return self.attn(h, mask=mask)
 
     def _ffn_branch(self, x: mx.array) -> mx.array:
-        """FFN branch: norm → feed-forward.
+        """FFN branch: norm → optional Canon-C → feed-forward.
 
         Args:
             x: Input, shape (batch, seq_len, d_model).
@@ -182,7 +200,10 @@ class TransformerBlock(nn.Module):
         Returns:
             FFN output, shape (batch, seq_len, d_model).
         """
-        return self.ffn(self.norm2(x))
+        h = self.norm2(x)
+        if self.canon_c is not None:
+            h = self.canon_c(h)
+        return self.ffn(h)
 
     def __call__(
         self,

@@ -479,6 +479,7 @@ def extract_hres_metrics(model: object) -> dict[str, float]:
     metrics: dict[str, float] = {}
     n_layers = 0
     total_frob = 0.0
+    total_sigma2 = 0.0
 
     blocks = getattr(model, "blocks", [])
     for i, block in enumerate(blocks):
@@ -508,8 +509,14 @@ def extract_hres_metrics(model: object) -> dict[str, float]:
             diff = hres - mx.eye(n)
             frob = float(mx.sqrt((diff * diff).sum()).item())
 
+            # σ₂: subdominant singular value (contraction factor)
+            hres_f32 = hres.astype(mx.float32) if hres.dtype != mx.float32 else hres
+            _, svd_vals, _ = mx.linalg.svd(hres_f32, stream=mx.cpu)
+            sigma2 = float(svd_vals[1].item()) if svd_vals.shape[0] > 1 else 0.0
+
             prefix = f"hres/L{i}_{branch_label}"
             metrics[f"{prefix}_frob"] = frob
+            metrics[f"{prefix}_sigma2"] = sigma2
 
             # Factor identity weights
             for k, b in enumerate(hc_layer.b_res):
@@ -521,9 +528,11 @@ def extract_hres_metrics(model: object) -> dict[str, float]:
             metrics[f"{prefix}_alpha_res"] = alpha
 
             total_frob += frob
+            total_sigma2 += sigma2
             n_layers += 1
 
     if n_layers > 0:
         metrics["hres/mean_frob"] = total_frob / n_layers
+        metrics["hres/mean_sigma2"] = total_sigma2 / n_layers
 
     return metrics

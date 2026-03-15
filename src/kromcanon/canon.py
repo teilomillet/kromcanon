@@ -28,7 +28,13 @@ class DepthwiseCausalConv(nn.Module):
         self.d_model = d_model
         self.kernel_size = kernel_size
         # Weight: (channels, kernel_size) — each channel gets its own kernel
-        self.weight = mx.random.normal((d_model, kernel_size)) * 0.02
+        # Kaiming uniform matching PyTorch Conv1d default (a=sqrt(5)):
+        # fan_in = kernel_size (depthwise: 1 input channel per group)
+        # bound = sqrt(6 / ((1 + a^2) * fan_in)) = sqrt(1 / kernel_size) = 0.5
+        bound = (1.0 / kernel_size) ** 0.5
+        self.weight = mx.random.uniform(
+            low=-bound, high=bound, shape=(d_model, kernel_size),
+        )
         if bias:
             self.bias = mx.zeros((d_model,))
         else:

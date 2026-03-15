@@ -8,7 +8,7 @@ class CanonConfig:
     """Configuration for Canon layers (1-D causal convolutions)."""
 
     enabled: bool = False
-    canon_set: str = "AB"  # Which canon layers: "", "A", "AB", "ABCD"
+    canon_set: str = "ABCD"  # Which canon layers: "", "A", "AB", "ABCD"
     kernel_size: int = 4
     bias: bool = False
     residual: bool = True  # Add canon output to input
@@ -32,7 +32,7 @@ class ModelConfig:
     """Full model configuration."""
 
     # Architecture
-    arch: str = "vanilla"  # "vanilla", "canon", "kromcanon"
+    arch: str = "vanilla"  # "vanilla", "canon", "kromhc", "kromcanon"
     vocab_size: int = 50304  # GPT-2: 50257 tokens, padded to nearest 64 for kernel alignment
     n_layers: int = 12
     n_heads: int = 12
@@ -55,13 +55,15 @@ class ModelConfig:
         """Set sub-config enabled flags based on arch."""
         if self.arch == "canon":
             self.canon = CanonConfig(enabled=True)
+        elif self.arch == "kromhc":
+            self.kromhc = KromHCConfig(enabled=True)
         elif self.arch == "kromcanon":
             self.canon = CanonConfig(enabled=True)
             self.kromhc = KromHCConfig(enabled=True)
         elif self.arch != "vanilla":
             msg = (
                 f"Unknown architecture: {self.arch!r}. "
-                "Must be 'vanilla', 'canon', or 'kromcanon'."
+                "Must be 'vanilla', 'canon', 'kromhc', or 'kromcanon'."
             )
             raise ValueError(msg)
 
